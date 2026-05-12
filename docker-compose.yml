@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: proxy-server
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - API_URL=${API_URL}
+      - CLIENT_ID=${CLIENT_ID}
+    restart: unless-stopped
+    networks:
+      - proxy-network
+    # Uncomment for development with hot reload
+    # volumes:
+    #   - .:/app
+    #   - /app/node_modules
+    # command: npm install && npm start
+
+networks:
+  proxy-network:
+    driver: bridge
