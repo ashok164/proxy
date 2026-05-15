@@ -11,10 +11,12 @@ router.get("/teams", (req, res) => {
 /* add/update */
 router.post("/team", (req, res) => {
   const { team_id, team_name, logo_url, tag, country } = req.body;
+  if (!team_id) return res.status(400).json({ error: "team_id parameter is mandatory" });
 
-  const index = teams.findIndex(t => t.team_id === team_id);
+  const normalizedId = String(team_id);
+  const index = teams.findIndex(t => String(t.team_id) === normalizedId);
 
-  const team = { team_id, team_name, logo_url, tag, country };
+  const team = { team_id: normalizedId, team_name, logo_url, tag, country };
 
   if (index !== -1) {
     teams[index] = team;
@@ -27,7 +29,8 @@ router.post("/team", (req, res) => {
 
 /* edit */
 router.put("/team/:team_id", (req, res) => {
-  const index = teams.findIndex(t => t.team_id === req.params.team_id);
+  const targetId = String(req.params.team_id);
+  const index = teams.findIndex(t => String(t.team_id) === targetId);
 
   if (index === -1) return res.status(404).json({ error: "Not found" });
 
@@ -38,7 +41,9 @@ router.put("/team/:team_id", (req, res) => {
 
 /* delete */
 router.delete("/team/:team_id", (req, res) => {
-  teams = teams.filter(t => t.team_id !== req.params.team_id);
+  const targetId = String(req.params.team_id);
+  
+  teams = teams.filter(t => String(t.team_id) !== targetId);
 
   res.json({ success: true });
 });

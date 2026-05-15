@@ -13,24 +13,24 @@ router.get("/realtime/:matchId", async (req, res) => {
 
     const response = await axios.get(`${API_URL}/${matchId}`, {
       headers: {
-        "Client-ID": CLIENT_ID.trim(),
+        "Client-ID": CLIENT_ID ? CLIENT_ID.trim() : "",
       },
     });
 
     const data = response.data;
 
-    // FIX: Look up and map 'team_stats' array instead of 'teams'
-    if (data?.team_stats && store.teamMap) {
-      data.team_stats = data.team_stats.map((team) => {
-        // Find the metadata by casting the number ID to a string
+    // FIX: Target data.match.team_stats instead of the root data.team_stats
+    if (data?.match?.team_stats && store.teamMap) {
+      data.match.team_stats = data.match.team_stats.map((team) => {
+        // Find the metadata row by casting the number ID to a string
         const meta = store.teamMap[String(team.team_id)];
 
         return {
           ...team,
-          // Enrich response with local configurations from your Google Sheet
+          // Merge your customized data elements from the Google Sheet 
           team_name: meta?.team_name || team.team_name,
           logo_url: meta?.logo_url || "",
-          tag: meta?.tag || "",          // This will now successfully show the team tag!
+          tag: meta?.tag || "",
           country: meta?.country || "",
         };
       });
