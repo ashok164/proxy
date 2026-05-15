@@ -55,10 +55,12 @@ async function loadSheet() {
 
         store.teamMap = map;
 
-        console.log("Sheet loaded successfully. Size:", Object.keys(store.teamMap).length);
+        console.log(
+          "Sheet loaded successfully. Size:",
+          Object.keys(store.teamMap).length,
+        );
         scheduleNextLoad();
       });
-
   } catch (err) {
     console.log("Sheet HTTP error:", err.message);
     scheduleNextLoad();
@@ -75,6 +77,10 @@ loadSheet();
 /* ===================== ROOT ===================== */
 app.get("/", (req, res) => {
   res.send("🚀 Esports Backend Running");
+});
+
+app.get("/version", (req, res) => {
+  res.json({ version: "v2", time: new Date() });
 });
 
 /* ===================== START ===================== */
