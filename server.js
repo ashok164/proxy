@@ -4,7 +4,7 @@ const axios = require("axios");
 const csv = require("csv-parser");
 require("dotenv").config();
 
-const store = require("./data/store");
+const store = require("./Data/store");
 
 const app = express();
 
@@ -15,10 +15,21 @@ app.use(express.json());
 const SHEET_URL = process.env.SHEET_URL;
 const PORT = process.env.PORT || 80;
 
+const getSheetValue = (row, keys) => {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+
+  return "";
+};
+
 /* ===================== ROUTES ===================== */
-const teamRoutes = require("./routes/teams");
-const logoRoutes = require("./routes/logos");
-const realtimeRoutes = require("./routes/realtime");
+const teamRoutes = require("./Routes/teams");
+const logoRoutes = require("./Routes/logos");
+const realtimeRoutes = require("./Routes/realtime");
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
@@ -26,6 +37,11 @@ app.use("/", teamRoutes);
 
 /* ===================== SHEET LOADER ===================== */
 async function loadSheet() {
+  if (!SHEET_URL) {
+    console.log("SHEET_URL is not configured. Sheet data was not loaded.");
+    return;
+  }
+
   try {
     const response = await axios.get(SHEET_URL, {
       responseType: "stream",
@@ -44,12 +60,26 @@ async function loadSheet() {
         const map = {};
 
         results.forEach((team) => {
-          if (!team.team_id) return;
-          map[String(team.team_id)] = {
-            team_name: team.team_name,
-            logo_url: team.logo_url,
-            tag: team.tag,
-            country: team.country_logo,
+          const teamId = getSheetValue(team, ["team_id", "Team Id", "Team ID"]);
+          const teamName = getSheetValue(team, ["team_name", "Team Name"]);
+          const teamTag = getSheetValue(team, ["teamTag", "tag", "Team Tag"]);
+          const teamLogo = getSheetValue(team, ["teamLogo", "logo_url", "Team Logo"]);
+          const countryLogo = getSheetValue(team, [
+            "countryLogo",
+            "country_logo",
+            "Country Logo",
+          ]);
+
+          if (!teamId) return;
+
+          map[String(teamId)] = {
+            team_name: teamName,
+            logo_url: teamLogo,
+            tag: teamTag,
+            country: countryLogo,
+            teamTag,
+            teamLogo,
+            countryLogo,
           };
         });
 
