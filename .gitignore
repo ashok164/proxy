@@ -1,3 +1,5 @@
-node_modules/
+node_modules
 .env
-proxy-deploy.tar.gz
+npm-debug.log
+.DS_Store
+uploads

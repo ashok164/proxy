@@ -26,7 +26,7 @@ app.get("/", (req, res) => {
 });
 
 app.get("/version", (req, res) => {
-  res.json({ version: "v2", time: new Date() });
+  res.json({ version: "v3 ws", time: new Date() });
 });
 
 /* ================= SINGLE WS UPGRADE HANDLER ================= */

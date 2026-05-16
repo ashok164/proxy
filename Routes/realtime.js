@@ -142,7 +142,7 @@ const startRealtimeWebSocket = (req, socket) => {
     ].join("\r\n")
   );
 
-  const interval = Number(process.env.WS_PUSH_INTERVAL_MS || 5000);
+  const interval = Number(process.env.WS_PUSH_INTERVAL_MS || 100);
 
   const builder =
     route.type === "tablestandings"

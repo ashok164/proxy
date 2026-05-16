@@ -4,7 +4,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production \
     PORT=3000 \
-    WS_PUSH_INTERVAL_MS=5000
+    WS_PUSH_INTERVAL_MS=100
 
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
