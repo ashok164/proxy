@@ -2,11 +2,13 @@ const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 const csv = require("csv-parser");
+const http = require("http");
 require("dotenv").config();
 
 const store = require("./Data/store");
 
 const app = express();
+const server = http.createServer(app);
 
 app.use(cors());
 app.use(express.json());
@@ -114,6 +116,15 @@ app.get("/version", (req, res) => {
 });
 
 /* ===================== START ===================== */
-app.listen(PORT, "0.0.0.0", () => {
+server.on("upgrade", (req, socket) => {
+  const handled = realtimeRoutes.handleRealtimeWebSocket(req, socket);
+
+  if (!handled) {
+    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+    socket.destroy();
+  }
+});
+
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });

@@ -21,7 +21,9 @@ Edit `.env` with your API configuration:
 ```
 API_URL=https://your-api-endpoint.com
 CLIENT_ID=your_client_id
-PORT=80
+SHEET_URL=https://your-google-sheet-csv-url
+PORT=3000
+WS_PUSH_INTERVAL_MS=5000
 ```
 
 ### 2. Build and Run with Docker Compose
@@ -36,6 +38,9 @@ The server will be available at `http://localhost:3000`
 
 - Health check: `http://localhost:3000/`
 - Forward request: `http://localhost:3000/realtime/{matchId}`
+- Table standings: `http://localhost:3000/tablestandings/{matchId}`
+- Realtime websocket: `ws://localhost:3000/ws/realtime/{matchId}`
+- Table standings websocket: `ws://localhost:3000/ws/tablestandings/{matchId}`
 
 ## Docker Commands
 
@@ -46,9 +51,11 @@ docker build -t proxy-server .
 
 ### Run the container
 ```bash
-docker run -p 3000:80 \
+docker run -p 3000:3000 \
   -e API_URL=https://your-api-endpoint.com \
   -e CLIENT_ID=your_client_id \
+  -e SHEET_URL=https://your-google-sheet-csv-url \
+  -e WS_PUSH_INTERVAL_MS=5000 \
   proxy-server
 ```
 
@@ -80,12 +87,14 @@ npm start
 |-----------|-------------|---------|
 | API_URL   | External API endpoint URL | Required |
 | CLIENT_ID | Authentication Client ID | Required |
-| PORT      | Server port | 80 |
+| SHEET_URL | Published Google Sheet CSV URL for team metadata | Optional |
+| PORT      | Server port | 3000 |
 | NODE_ENV  | Environment mode | production |
+| WS_PUSH_INTERVAL_MS | Websocket push interval in milliseconds | 5000 |
 
 ## Architecture
 
 - **Base Image**: Node.js 20 Alpine (lightweight)
-- **Port**: 80 (inside container), mapped to 3000 (on host)
+- **Port**: 3000 (inside container), mapped to 3000 (on host)
 - **Health Check**: Enabled with 30s intervals
 - **Restart Policy**: Auto-restart on failure
