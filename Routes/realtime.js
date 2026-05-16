@@ -25,6 +25,7 @@ const fetchRealtimeMatch = async (matchId) => {
 };
 
 /* ================= HELPERS ================= */
+/* ================= HELPERS ================= */
 const getRealtimeTeams = (data) => {
   if (Array.isArray(data?.match?.team_stats)) return data.match.team_stats;
   if (Array.isArray(data?.team_stats)) return data.team_stats;
@@ -36,14 +37,18 @@ const getRealtimeTeams = (data) => {
 const getSheetTeam = (id) => store.teamMap?.[String(id)] || null;
 
 const mergeTeam = (team) => {
-  const meta = getSheetTeam(team.team_id);
+  const meta = getSheetTeam(team.team_id || team.id);
 
   return {
     ...team,
     team_name: meta?.team_name || team.team_name,
-    teamTag: meta?.teamTag || meta?.tag || "",
-    teamLogo: meta?.teamLogo || meta?.logo_url || "",
-    countryLogo: meta?.countryLogo || meta?.country || "",
+    teamTag: meta?.teamTag || meta?.tag || team.teamTag || "",
+    teamLogo:
+      meta?.teamLogo || meta?.logo_url || meta?.logo || team.teamLogo || "",
+    countryLogo: meta?.countryLogo || meta?.country || team.countryLogo || "",
+    // Mapping ranking_score from sheet fallback to API data
+    ranking_score:
+      meta?.ranking_score || meta?.score || team.ranking_score || 0,
   };
 };
 
@@ -139,7 +144,7 @@ const startRealtimeWebSocket = (req, socket) => {
       `Sec-WebSocket-Accept: ${acceptKey}`,
       "",
       "",
-    ].join("\r\n")
+    ].join("\r\n"),
   );
 
   const interval = Number(process.env.WS_PUSH_INTERVAL_MS || 100);
