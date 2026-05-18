@@ -13,6 +13,9 @@ const getHeaders = () => ({
 });
 
 const fetchMatch = async (id) => {
+  // Debug log to confirm exact upstream requests in PM2
+  console.log(`📡 Axios fetching from URL: ${API_URL}/${id}`);
+  
   const res = await axios.get(`${API_URL}/${id}`, {
     headers: getHeaders(),
   });
@@ -22,7 +25,6 @@ const fetchMatch = async (id) => {
 const getTeams = (data) => data?.match?.team_stats || data?.team_stats || [];
 
 const mergeTeam = (team) => {
-  console.log(team,'team')
   const teamIdKey = team.team_id || team.id;
   const meta = store.teamMap?.[String(teamIdKey)];
 
@@ -85,19 +87,34 @@ const frameWSFrame = (payload) => {
   return frame;
 };
 
-/* ================= WS ================= */
+/* ================= WS ROUTE PARSER (FIXED) ================= */
 const parseWS = (url = "") => {
-  // Fix: Changed 'clean' to 'url'
-  const match = url.match(/^\/(?:ws\/)?(realtime|tablestandings)\/([^/]+)$/);
+  if (!url) return null;
+
+  // Flexible regex matching: extracts route endpoints while tossing query strings/trailing slashes
+  const match = url.match(/\/(?:ws\/)?(realtime|tablestandings)\/([^/?#]+)/);
   if (!match) return null;
 
-  // Fix: match[1] is the sub-route directory, match[2] captures the actual ID parameter
-  return { matchId: match[2] };
+  return { 
+    type: match[1],
+    matchId: match[2].trim() 
+  };
 };
 
 const handleWS = (req, socket) => {
   const route = parseWS(req.url);
-  if (!route) return false;
+  
+  // 🛡️ Guard 1: Drop invalid layout attempts immediately
+  if (!route) {
+    console.log(`🚫 Rejecting invalid WS URL structure: ${req.url}`);
+    return false;
+  }
+
+  // 🛡️ Guard 2: Prevent React component initialization strings from triggering 404 loops
+  if (route.matchId === "12345" || route.matchId === "undefined" || !route.matchId) {
+    console.log(`⏳ WebSocket handshake active on /${route.type}/, awaiting valid tournament Match ID...`);
+    return true; 
+  }
 
   const key = req.headers["sec-websocket-key"];
   if (!key) return true;
@@ -114,6 +131,8 @@ const handleWS = (req, socket) => {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
   );
 
+  console.log(`🚀 WS Connection Established for Match ID: ${route.matchId}`);
+
   const send = async () => {
     try {
       const data = await buildStandings(route.matchId);
@@ -122,18 +141,20 @@ const handleWS = (req, socket) => {
         data,
       });
 
-      // Fix: Send data packaged inside a valid WS data frame wrapper
       socket.write(frameWSFrame(jsonString));
     } catch (err) {
-      console.error("Error broadcasting match standings via WS:", err.message);
+      console.error(`❌ Error broadcasting match standings [ID: ${route.matchId}]:`, err.message);
     }
   };
 
-  // Warning: An interval of 100ms means hitting your upstream API_URL 10 times per second.
-  // Ensure your upstream server won't rate limit you, or turn this up to 1000-2000ms.
-  const interval = setInterval(send, 100);
+  // Adjusted interval rate to 1500ms to preserve network connection stability and guard API limits
+  const interval = setInterval(send, 1500);
 
-  socket.on("close", () => clearInterval(interval));
+  socket.on("close", () => {
+    console.log(`🔌 Client disconnected from Match ID: ${route.matchId}`);
+    clearInterval(interval);
+  });
+  
   socket.on("error", () => clearInterval(interval));
 
   send();
