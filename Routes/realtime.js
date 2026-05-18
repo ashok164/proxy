@@ -8,192 +8,138 @@ const store = require("../Data/store");
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
 
-/* ================= HEADER ================= */
-const getClientHeaders = () => ({
-  "Client-ID": CLIENT_ID ? CLIENT_ID.trim() : "",
+const getHeaders = () => ({
+  "Client-ID": CLIENT_ID,
 });
 
-/* ================= FETCH ================= */
-const fetchRealtimeMatch = async (matchId) => {
-  if (!API_URL) throw new Error("API_URL not configured");
-
-  const res = await axios.get(`${API_URL}/${matchId}`, {
-    headers: getClientHeaders(),
+const fetchMatch = async (id) => {
+  const res = await axios.get(`${API_URL}/${id}`, {
+    headers: getHeaders(),
   });
-
   return res.data;
 };
 
-/* ================= HELPERS ================= */
-/* ================= HELPERS ================= */
-const getRealtimeTeams = (data) => {
-  if (Array.isArray(data?.match?.team_stats)) return data.match.team_stats;
-  if (Array.isArray(data?.team_stats)) return data.team_stats;
-  if (Array.isArray(data?.standings)) return data.standings;
-  if (Array.isArray(data?.teams)) return data.teams;
-  return [];
-};
-
-const getSheetTeam = (id) => store.teamMap?.[String(id)] || null;
+const getTeams = (data) => data?.match?.team_stats || data?.team_stats || [];
 
 const mergeTeam = (team) => {
-  const meta = getSheetTeam(team.team_id || team.id);
+  console.log(team,'team')
+  const teamIdKey = team.team_id || team.id;
+  const meta = store.teamMap?.[String(teamIdKey)];
+
+  const base = process.env.BASE_URL || "";
+  
+  // Helper function to safely format asset locations
+  const formatImgUri = (fieldValue) => {
+    if (!fieldValue) return "";
+    // If the value in the sheet is already a full URL, return it as-is
+    if (fieldValue.startsWith("http://") || fieldValue.startsWith("https://")) {
+      return fieldValue;
+    }
+    // Otherwise, treat it as a local filename and append your backend uploads directory
+    return `${base}/uploads/${fieldValue}`;
+  };
 
   return {
     ...team,
+    // Merge properties safely, falling back to live match API keys if the sheet column is blank
     team_name: meta?.team_name || team.team_name,
-    teamTag: meta?.teamTag || meta?.tag || team.teamTag || "",
-    teamLogo:
-      meta?.teamLogo || meta?.logo_url || meta?.logo || team.teamLogo || "",
-    countryLogo: meta?.countryLogo || meta?.country || team.countryLogo || "",
-    // Mapping ranking_score from sheet fallback to API data
-    ranking_score:
-      meta?.ranking_score || meta?.score || team.ranking_score || 0,
+    teamTag: meta?.short_tag || team.teamTag || "",
+    teamLogo: formatImgUri(meta?.team_logo) || team.teamLogo || "",
+    countryLogo: formatImgUri(meta?.country_logo) || team.countryLogo || "",
+    ranking_score: meta?.ranking_score || team.ranking_score || 0,
   };
 };
 
-/* ================= PAYLOAD ================= */
-const buildRealtimePayload = async (matchId) => {
-  const data = await fetchRealtimeMatch(matchId);
-
-  if (data?.match?.team_stats) {
-    data.match.team_stats = data.match.team_stats.map(mergeTeam);
-  }
-
-  return data;
-};
-
-const buildTableStandingsPayload = async (matchId) => {
-  const data = await fetchRealtimeMatch(matchId);
-
-  const standings = getRealtimeTeams(data).map(mergeTeam);
-
-  return { matchId, standings };
-};
-
-/* ================= WS UTIL ================= */
-const encodeFrame = (payload) => {
-  const message = Buffer.from(payload);
-  const length = message.length;
-  let header;
-
-  if (length < 126) {
-    header = Buffer.alloc(2);
-    header[1] = length;
-  } else if (length < 65536) {
-    header = Buffer.alloc(4);
-    header[1] = 126;
-    header.writeUInt16BE(length, 2);
-  } else {
-    header = Buffer.alloc(10);
-    header[1] = 127;
-    header.writeBigUInt64BE(BigInt(length), 2);
-  }
-
-  header[0] = 0x81;
-
-  return Buffer.concat([header, message]);
-};
-
-const sendWS = (socket, data) => {
-  if (socket.destroyed || socket.writableEnded) return;
-  socket.write(encodeFrame(JSON.stringify(data)));
-};
-
-/* ================= SIMPLE PARSER ================= */
-const parseWSRoute = (url = "") => {
-  const clean = url.split("?")[0];
-
-  console.log("WS PATH:", clean);
-
-  const match = clean.match(/^\/(?:ws\/)?(realtime|tablestandings)\/([^/]+)$/);
-
-  if (!match) {
-    console.log("❌ WS REJECTED:", clean);
-    return null;
-  }
+const buildStandings = async (id) => {
+  const data = await fetchMatch(id);
+  const teams = getTeams(data).map(mergeTeam);
 
   return {
-    type: match[1],
-    matchId: match[2],
+    matchId: id,
+    standings: teams,
   };
 };
 
-/* ================= WS HANDLER ================= */
-const startRealtimeWebSocket = (req, socket) => {
-  const route = parseWSRoute(req.url);
+/* ================= WS FRAME HELPER ================= */
+// Helper to package raw text/JSON data into a standard WebSocket Text Frame (Opcode 0x1)
+const frameWSFrame = (payload) => {
+  const dataBuffer = Buffer.from(payload, "utf8");
+  const len = dataBuffer.length;
+  let frame;
 
+  if (len <= 125) {
+    frame = Buffer.alloc(2 + len);
+    frame[1] = len;
+  } else if (len <= 65535) {
+    frame = Buffer.alloc(4 + len);
+    frame[1] = 126;
+    frame.writeUInt16BE(len, 2);
+  } else {
+    frame = Buffer.alloc(10 + len);
+    frame[1] = 127;
+    frame.writeBigUInt64BE(BigInt(len), 2);
+  }
+  
+  frame[0] = 0x81; // 0x80 (FIN bit set) + 0x01 (Text Frame opcode)
+  dataBuffer.copy(frame, frame.length - len);
+  return frame;
+};
+
+/* ================= WS ================= */
+const parseWS = (url = "") => {
+  // Fix: Changed 'clean' to 'url'
+  const match = url.match(/^\/(?:ws\/)?(realtime|tablestandings)\/([^/]+)$/);
+  if (!match) return null;
+
+  // Fix: match[1] is the sub-route directory, match[2] captures the actual ID parameter
+  return { matchId: match[2] };
+};
+
+const handleWS = (req, socket) => {
+  const route = parseWS(req.url);
   if (!route) return false;
 
   const key = req.headers["sec-websocket-key"];
-  if (!key) {
-    socket.destroy();
-    return true;
-  }
+  if (!key) return true;
 
-  const acceptKey = crypto
+  const accept = crypto
     .createHash("sha1")
     .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
     .digest("base64");
 
   socket.write(
-    [
-      "HTTP/1.1 101 Switching Protocols",
-      "Upgrade: websocket",
-      "Connection: Upgrade",
-      `Sec-WebSocket-Accept: ${acceptKey}`,
-      "",
-      "",
-    ].join("\r\n"),
+    "HTTP/1.1 101 Switching Protocols\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
   );
-
-  const interval = Number(process.env.WS_PUSH_INTERVAL_MS || 100);
-
-  const builder =
-    route.type === "tablestandings"
-      ? buildTableStandingsPayload
-      : buildRealtimePayload;
 
   const send = async () => {
     try {
-      const data = await builder(route.matchId);
-
-      sendWS(socket, {
-        type: route.type,
-        matchId: route.matchId,
+      const data = await buildStandings(route.matchId);
+      const jsonString = JSON.stringify({
+        type: "tablestandings",
         data,
-        pushedAt: new Date().toISOString(),
       });
+
+      // Fix: Send data packaged inside a valid WS data frame wrapper
+      socket.write(frameWSFrame(jsonString));
     } catch (err) {
-      sendWS(socket, {
-        type: "error",
-        matchId: route.matchId,
-        message: err.message,
-      });
+      console.error("Error broadcasting match standings via WS:", err.message);
     }
   };
 
-  const timer = setInterval(send, interval);
+  // Warning: An interval of 100ms means hitting your upstream API_URL 10 times per second.
+  // Ensure your upstream server won't rate limit you, or turn this up to 1000-2000ms.
+  const interval = setInterval(send, 100);
 
-  socket.on("close", () => clearInterval(timer));
-  socket.on("error", () => clearInterval(timer));
+  socket.on("close", () => clearInterval(interval));
+  socket.on("error", () => clearInterval(interval));
 
   send();
-
   return true;
 };
 
-/* ================= EXPORT ================= */
-router.get("/realtime/:matchId", async (req, res) => {
-  const data = await buildRealtimePayload(req.params.matchId);
-  res.json(data);
-});
-
-router.get("/tablestandings/:matchId", async (req, res) => {
-  const data = await buildTableStandingsPayload(req.params.matchId);
-  res.json(data);
-});
-
-router.handleRealtimeWebSocket = startRealtimeWebSocket;
+router.handleRealtimeWebSocket = handleWS;
 
 module.exports = router;
