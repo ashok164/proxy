@@ -3,8 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
-// 💡 FIX THIS PATH to point exactly to your database connection file:
-const pool = require("../Database/db"); 
+const pool = require("../Database/db");
 
 const router = express.Router();
 
@@ -29,35 +28,51 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 /* =========================================================
-   CREATE TEAM
+   CREATE TEAMS (ARRAY SUPPORT)
 ========================================================= */
 router.post("/create", async (req, res) => {
   try {
-    const { teamId, teamName, shortTag } = req.body;
+    const teams = req.body;
 
-    if (!teamId || !teamName) {
+    // validation
+    if (!Array.isArray(teams)) {
       return res.status(400).json({
         success: false,
-        message: "teamId and teamName are required",
+        message: "Request body must be an array of teams",
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO teams (team_id, team_name, short_tag)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
-      [teamId, teamName, shortTag || null]
-    );
+    const insertedTeams = [];
+
+    for (const team of teams) {
+      const result = await pool.query(
+        `INSERT INTO teams 
+          (team_id, team_name, short_tag, team_logo, country_logo)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [
+          team.teamId,
+          team.teamName,
+          team.shortTag,
+          team.teamLogo,
+          team.countryLogo,
+        ]
+      );
+
+      insertedTeams.push(result.rows[0]);
+    }
 
     return res.json({
       success: true,
-      data: result.rows[0],
+      message: "Teams created successfully",
+      data: insertedTeams,
     });
   } catch (err) {
     console.error("CREATE ERROR:", err);
     return res.status(500).json({
       success: false,
       message: "Create failed",
+      error: err.message,
     });
   }
 });
@@ -117,7 +132,7 @@ router.get("/:id", async (req, res) => {
 });
 
 /* =========================================================
-   UPDATE TEAM (With Image Handling)
+   UPDATE TEAM (WITH FILE UPLOAD)
 ========================================================= */
 router.put(
   "/update/:id",
