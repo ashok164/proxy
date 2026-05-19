@@ -2,17 +2,18 @@ const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
 const https = require("https");
-const os = require("os"); // Added to check local network interface availability
+const os = require("os");
 const router = express.Router();
 
 const store = require("../Data/store");
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
-
 const TARGET_IP = process.env.VPS_IP || "82.29.155.252";
 
-// Helper function to safely check if this machine actually owns the public IP interface
+// ⚡ Global In-Memory RAM Cache to guarantee 0ms instant browser delivery
+const matchCache = {};
+
 const checkLocalIpAvailability = (targetIp) => {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
@@ -23,7 +24,6 @@ const checkLocalIpAvailability = (targetIp) => {
   return false;
 };
 
-// Only bind localAddress if the server hardware actually owns that IP (Prevents local crash)
 const isIpValidOnMachine = checkLocalIpAvailability(TARGET_IP);
 const staticIpAgent = isIpValidOnMachine ? new https.Agent({ localAddress: TARGET_IP }) : null;
 
@@ -34,14 +34,11 @@ const getHeaders = () => ({
 const fetchMatch = async (id) => {
   const config = {
     headers: getHeaders(),
-    timeout: 60000 // Prevent request hanging
+    timeout: 5000 // Reduced from 60s to 5s to prevent hanging threads from breaking the server
   };
 
   if (staticIpAgent) {
-    console.log(`📡 [PROXY ACTIVE] Axios fetching from URL: ${API_URL}/${id} via localAddress: ${TARGET_IP}`);
     config.httpsAgent = staticIpAgent;
-  } else {
-    console.log(`📡 [STANDARD GATEWAY] OS does not own ${TARGET_IP} or running locally. Route via standard interface.`);
   }
   
   const res = await axios.get(`${API_URL}/${id}`, config);
@@ -52,17 +49,12 @@ const getTeams = (data) => data?.match?.team_stats || data?.team_stats || [];
 
 const mergeTeam = (team) => {
   const teamIdKey = team.team_id || team.id;
-  
-  // Guard clause: Safe fallback if store or teamMap failed to initialize from the Database/Sheet
   const meta = (store && store.teamMap) ? store.teamMap[String(teamIdKey)] : null;
-
   const base = process.env.BASE_URL || "";
   
   const formatImgUri = (fieldValue) => {
     if (!fieldValue) return "";
-    if (fieldValue.startsWith("http://") || fieldValue.startsWith("https://")) {
-      return fieldValue;
-    }
+    if (fieldValue.startsWith("http://") || fieldValue.startsWith("https://")) return fieldValue;
     return `${base}/uploads/${fieldValue}`;
   };
 
@@ -84,6 +76,63 @@ const buildStandings = async (id) => {
     matchId: id,
     standings: teams,
   };
+};
+
+/* ================= CENTRAL DATA STREAM ENGINE ================= */
+const startCentralEngine = (matchId) => {
+  if (!matchCache[matchId]) {
+    matchCache[matchId] = {
+      clients: new Set(),
+      rawJsonData: null,
+      latestFrame: null,
+      intervalId: null,
+      lastActive: Date.now()
+    };
+  }
+
+  // If the background update loop is already active, do nothing
+  if (matchCache[matchId].intervalId) return;
+
+  console.log(`🌀 [ENGINE START] Initializing centralized data worker loop for Match ID: ${matchId}`);
+
+  const tick = async () => {
+    const entry = matchCache[matchId];
+    
+    // Auto-cleanup worker loop if no connections are listening for over 30 seconds
+    if (entry.clients.size === 0 && Date.now() - entry.lastActive > 30000) {
+      console.log(`💤 [ENGINE SLEEP] Suspending central worker loop for inactive Match ID: ${matchId}`);
+      clearInterval(entry.intervalId);
+      entry.intervalId = null;
+      return;
+    }
+
+    try {
+      const standings = await buildStandings(matchId);
+      entry.rawJsonData = standings;
+      
+      const jsonString = JSON.stringify({
+        type: "tablestandings",
+        data: standings
+      });
+      entry.latestFrame = frameWSFrame(jsonString);
+
+      // Broadcast to all active clients connected to this match instantly from memory
+      for (const socket of entry.clients) {
+        if (socket.writable) {
+          socket.write(entry.latestFrame);
+        }
+      }
+    } catch (err) {
+      console.error(`❌ Central Worker Loop Error [Match ID: ${matchId}]:`, err.message);
+    }
+  };
+
+  // 100ms triggers external API rate-blocking. 1000ms - 1500ms provides clean real-time metrics.
+  const intervalDuration = Math.max(1000, parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1500);
+  matchCache[matchId].intervalId = setInterval(tick, intervalDuration);
+  
+  // Fire once immediately to prime the cache
+  tick();
 };
 
 /* ================= WS FRAME HELPER ================= */
@@ -110,33 +159,18 @@ const frameWSFrame = (payload) => {
   return frame;
 };
 
-/* ================= WS ROUTE PARSER ================= */
 const parseWS = (url = "") => {
   if (!url) return null;
   const match = url.match(/\/(?:ws\/)?(realtime|tablestandings)\/([^/?#]+)/);
   if (!match) return null;
-
-  return { 
-    type: match[1],
-    matchId: match[2].trim() 
-  };
+  return { type: match[1], matchId: match[2].trim() };
 };
 
 const handleWS = (req, socket) => {
   const route = parseWS(req.url);
-  
-  if (!route) {
-    console.log(`🚫 Rejecting invalid WS URL structure: ${req.url}`);
-    return false;
-  }
-
-  if (!route.matchId || route.matchId === "undefined") {
-    console.log(`⏳ WebSocket handshake active on /${route.type}/, awaiting valid tournament Match ID...`);
-    return true; 
-  }
+  if (!route || !route.matchId || route.matchId === "undefined") return false;
 
   const key = req.headers["sec-websocket-key"];
-  // BLUNDER FIX: Return false if handshake security key doesn't exist so server.js doesn't treat this like a bad WS connection
   if (!key) return false; 
 
   const accept = crypto
@@ -151,82 +185,68 @@ const handleWS = (req, socket) => {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
   );
 
-  console.log(`🚀 WS Connection Established for Match ID: ${route.matchId}`);
+  const matchId = route.matchId;
+  console.log(`🚀 Client joined WebSocket pool for Match ID: ${matchId}`);
 
-  const send = async () => {
-    try {
-      const data = await buildStandings(route.matchId);
-      const jsonString = JSON.stringify({
-        type: "tablestandings",
-        data,
-      });
+  startCentralEngine(matchId);
+  
+  const entry = matchCache[matchId];
+  entry.clients.add(socket);
+  entry.lastActive = Date.now();
 
-      if (socket.writable) {
-        socket.write(frameWSFrame(jsonString));
-      }
-    } catch (err) {
-      if (err.response) {
-        console.error(`❌ Garena API Rejected Request [Status ${err.response.status}]:`, JSON.stringify(err.response.data));
-      } else {
-        console.error(`❌ Error fetching/broadcasting match standings [ID: ${route.matchId}]:`, err.message);
-      }
+  // Instantly send the cached state from RAM memory so client UI populates with 0ms delay!
+  if (entry.latestFrame && socket.writable) {
+    socket.write(entry.latestFrame);
+  }
+
+  const cleanUp = () => {
+    console.log(`🔌 Client disconnected from Match ID: ${matchId}`);
+    if (matchCache[matchId]) {
+      matchCache[matchId].clients.delete(socket);
     }
   };
 
-  const intervalDuration = parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1500;
-  const interval = setInterval(send, intervalDuration);
+  socket.on("close", cleanUp);
+  socket.on("error", cleanUp);
 
-  socket.on("close", () => {
-    console.log(`🔌 Client disconnected from Match ID: ${route.matchId}`);
-    clearInterval(interval);
-  });
-  
-  socket.on("error", () => clearInterval(interval));
-
-  send();
   return true;
 };
 
-/* ================= NEW EXPLICIT HTTP BROWSER ROUTE HANDLERS ================= */
+/* ================= HIGH SPEED BROWSER HTTP ENDPOINTS ================= */
 
-// Handles browser path structure: http://82.29.155.252:3000/ws/realtime/1865398120330647552
-router.get("/ws/realtime/:matchId", async (req, res) => {
+router.get(["/ws/realtime/:matchId", "/realtime/:matchId"], async (req, res) => {
   try {
     const matchId = req.params.matchId;
-    console.log(`🌐 Browser HTTP GET request received for Match ID: ${matchId}`);
     
+    // ⚡ SERVE FROM SERVER RAM INSTANTLY WITH ZERO DELAY IF VALID CACHE EXISTS!
+    if (matchCache[matchId]) {
+      matchCache[matchId].lastActive = Date.now();
+      if (matchCache[matchId].rawJsonData) {
+        return res.json({
+          success: true,
+          type: "tablestandings_cached",
+          data: matchCache[matchId].rawJsonData
+        });
+      }
+    }
+
+    // Cache miss (First time system has ever requested this specific match token)
+    console.log(`🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`);
+    startCentralEngine(matchId);
+    
+    // Pull synchronously just this once to prevent empty response
     const standingsData = await buildStandings(matchId);
-    
     return res.json({
       success: true,
       type: "tablestandings_static",
       data: standingsData
     });
-  } catch (err) {
-    console.error("❌ Browser GET /ws/realtime Error:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
 
-// Handles alternate path structure: http://82.29.155.252:3000/realtime/1865398120330647552
-router.get("/realtime/:matchId", async (req, res) => {
-  try {
-    const matchId = req.params.matchId;
-    console.log(`🌐 Browser HTTP GET request received for Match ID (alternate path): ${matchId}`);
-    
-    const standingsData = await buildStandings(matchId);
-    
-    return res.json({
-      success: true,
-      type: "tablestandings_static",
-      data: standingsData
-    });
   } catch (err) {
-    console.error("❌ Browser GET /realtime Error:", err.message);
+    console.error("❌ Browser HTTP GET Endpoint Error:", err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
 router.handleRealtimeWebSocket = handleWS;
-
 module.exports = router;
