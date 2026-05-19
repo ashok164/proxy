@@ -33,36 +33,33 @@ const getBaseUrl = (req) => `${req.protocol}://${req.get("host")}`;
 /* =========================================================
    CREATE TEAMS
 ========================================================= */
-router.post("/create", async (req, res) => {
-  try {
-    const teams = req.body;
+router.post(
+  "/create",
+  upload.fields([
+    { name: "teamLogo", maxCount: 1 },
+    { name: "countryLogo", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const baseUrl = getBaseUrl(req);
 
-    if (!Array.isArray(teams)) {
-      return res.status(400).json({
-        success: false,
-        message: "Request body must be an array",
-      });
-    }
+      const teamId = req.body.teamId;
+      const teamName = req.body.teamName;
+      const shortTag = req.body.shortTag;
 
-    const baseUrl = getBaseUrl(req);
-    const inserted = [];
+      const teamLogoFile = req.files?.teamLogo?.[0]?.filename || null;
+      const countryLogoFile = req.files?.countryLogo?.[0]?.filename || null;
 
-    for (const team of teams) {
       const result = await pool.query(
         `INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo)
-         VALUES ($1,$2,$3,$4,$5)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING *`,
-        [
-          team.teamId,
-          team.teamName,
-          team.shortTag,
-          team.teamLogo,
-          team.countryLogo,
-        ]
+        [teamId, teamName, shortTag, teamLogoFile, countryLogoFile],
       );
 
       const row = result.rows[0];
 
+      // convert to full URL
       row.team_logo = row.team_logo
         ? `${baseUrl}/uploads/${row.team_logo}`
         : null;
@@ -71,21 +68,19 @@ router.post("/create", async (req, res) => {
         ? `${baseUrl}/uploads/${row.country_logo}`
         : null;
 
-      inserted.push(row);
+      res.json({
+        success: true,
+        data: row,
+      });
+    } catch (err) {
+      console.error("CREATE ERROR:", err);
+      res.status(500).json({
+        success: false,
+        message: err.message,
+      });
     }
-
-    res.json({
-      success: true,
-      data: inserted,
-    });
-  } catch (err) {
-    console.error("CREATE ERROR:", err);
-    res.status(500).json({
-      success: false,
-      message: err.message,
-    });
-  }
-});
+  },
+);
 
 /* =========================================================
    GET ALL TEAMS
@@ -94,15 +89,11 @@ router.get("/all", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
 
-    const result = await pool.query(
-      "SELECT * FROM teams ORDER BY id DESC"
-    );
+    const result = await pool.query("SELECT * FROM teams ORDER BY id DESC");
 
     const data = result.rows.map((row) => ({
       ...row,
-      team_logo: row.team_logo
-        ? `${baseUrl}/uploads/${row.team_logo}`
-        : null,
+      team_logo: row.team_logo ? `${baseUrl}/uploads/${row.team_logo}` : null,
       country_logo: row.country_logo
         ? `${baseUrl}/uploads/${row.country_logo}`
         : null,
@@ -127,10 +118,9 @@ router.get("/:id", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
 
-    const result = await pool.query(
-      "SELECT * FROM teams WHERE id = $1",
-      [req.params.id]
-    );
+    const result = await pool.query("SELECT * FROM teams WHERE id = $1", [
+      req.params.id,
+    ]);
 
     if (!result.rows.length) {
       return res.status(404).json({
@@ -187,7 +177,7 @@ router.put(
              updated_at=NOW()
          WHERE id=$6
          RETURNING *`,
-        [teamId, teamName, shortTag, teamLogo, countryLogo, req.params.id]
+        [teamId, teamName, shortTag, teamLogo, countryLogo, req.params.id],
       );
 
       if (!result.rows.length) {
@@ -217,7 +207,7 @@ router.put(
         success: false,
       });
     }
-  }
+  },
 );
 
 /* =========================================================
@@ -227,7 +217,7 @@ router.delete("/delete/:id", async (req, res) => {
   try {
     const result = await pool.query(
       "DELETE FROM teams WHERE id=$1 RETURNING *",
-      [req.params.id]
+      [req.params.id],
     );
 
     if (!result.rows.length) {
