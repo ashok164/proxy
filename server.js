@@ -2,26 +2,22 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const axios = require("axios");
+const path = require("path"); // ✅ IMPORTANT FIX
 
 /* ================= ENV FIX (LOCAL + PROD) ================= */
 const dotenv = require("dotenv");
 
-/* SAFE NODE_ENV (VERY IMPORTANT FOR VPS) */
 const NODE_ENV = process.env.NODE_ENV || "development";
-
-// Crucial step: Explicitly attach it to process.env so router files can see it
 process.env.NODE_ENV = NODE_ENV;
 
 const envFile = NODE_ENV === "production" ? ".env.production" : ".env.local";
 
 dotenv.config({ path: envFile });
 
-/* DEBUG (TEMP BUT IMPORTANT) */
 console.log("📦 ENV LOADED FILE:", envFile);
 console.log("⚙️ RUNNING IN MODE:", process.env.NODE_ENV);
 console.log("🔑 DB_PASSWORD EXISTS:", !!process.env.DB_PASSWORD);
 
-/* Safety check */
 if (!process.env.DB_PASSWORD) {
   console.error("❌ DB_PASSWORD missing in env file");
   process.exit(1);
@@ -33,7 +29,6 @@ const server = http.createServer(app);
 
 const initDB = require("./Database/initDB");
 const pool = require("./Database/db");
-
 const store = require("./Data/store");
 
 /* ================= DB INIT SAFE ================= */
@@ -46,9 +41,21 @@ const store = require("./Data/store");
   }
 })();
 
+/* ================= MIDDLEWARE ================= */
 app.use(cors());
 app.use(express.json());
 
+/* ================= STATIC FILE FIX (IMPORTANT) ================= */
+// ❌ OLD (BROKEN IN VPS)
+// app.use("/uploads", express.static("uploads"));
+
+// ✅ FIXED VERSION (VPS SAFE)
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "uploads"))
+);
+
+/* ================= CONFIG ================= */
 const PORT = process.env.PORT || 3000;
 const SHEET_URL = process.env.SHEET_URL;
 
@@ -102,13 +109,8 @@ const syncSheetToPostgres = async () => {
     const res = await axios.get(SHEET_URL);
     const teams = parseCSVToArray(res.data);
 
-    if (!store.teamMap) {
-      store.teamMap = {};
-    } else {
-      for (const key in store.teamMap) {
-        delete store.teamMap[key];
-      }
-    }
+    if (!store.teamMap) store.teamMap = {};
+    else Object.keys(store.teamMap).forEach(k => delete store.teamMap[k]);
 
     for (const t of teams) {
       store.teamMap[String(t.team_id)] = t;
@@ -121,7 +123,7 @@ const syncSheetToPostgres = async () => {
            team_name = EXCLUDED.team_name,
            short_tag = EXCLUDED.short_tag,
            updated_at = NOW()`,
-        [t.team_id, t.team_name, t.short_tag],
+        [t.team_id, t.team_name, t.short_tag]
       );
     }
 
@@ -145,10 +147,8 @@ const teamRoutes = require("./Routes/teamRecord");
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
 app.use("/api/teams", teamRoutes);
-app.use("/uploads", express.static("uploads"));
 
-/* ================= EXPLICIT VERSION ENDPOINT ================= */
-// Target URL: http://localhost:3000/version
+/* ================= VERSION ================= */
 app.get("/version", (req, res) => {
   return res.json({
     success: true,
@@ -159,46 +159,32 @@ app.get("/version", (req, res) => {
   });
 });
 
-/* ================= SERVER ================= */
+/* ================= SERVER START ================= */
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on ${PORT}`);
 });
 
-/* ================= WS UPGRADE SEQUENCE WITH VERSION MANAGEMENT ================= */
+/* ================= WS UPGRADE ================= */
 server.on("upgrade", (req, socket, head) => {
   try {
     const isWebSocket =
       req.headers.upgrade && req.headers.upgrade.toLowerCase() === "websocket";
 
-    // If it's a browser page lookup (HTTP GET), hand off control back to standard Express handlers
-    if (!isWebSocket) {
-      return;
-    }
+    if (!isWebSocket) return;
 
-    /* === OPTIONAL: WS LEVEL CLIENT VERSION GATEWAY === */
-    // If you pass "x-client-version" in your handshake config, you can explicitly reject older software
     const clientVersion = req.headers["x-client-version"];
-    console.log(
-      `🔌 Incoming WS upgrade handshake connection. Client build version: ${
-        clientVersion || "None Provided"
-      }`,
-    );
+    console.log("🔌 WS Client version:", clientVersion || "None");
 
     const handled = realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
 
-    if (!handled) {
-      console.log(
-        "⚠️ WS Upgrade request matched nothing or failed verification. Closing connection.",
-      );
-      socket.destroy();
-    }
+    if (!handled) socket.destroy();
   } catch (err) {
     console.error("❌ WS upgrade error:", err.message);
     socket.destroy();
   }
 });
 
-/* ================= GLOBAL SAFETY ================= */
+/* ================= GLOBAL ERRORS ================= */
 process.on("unhandledRejection", (err) => {
   console.error("❌ Unhandled Rejection:", err.message);
 });
