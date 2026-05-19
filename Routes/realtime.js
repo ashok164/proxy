@@ -1,6 +1,8 @@
 const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
+const https = require("https");
+const os = require("os"); // Added to check local network interface availability
 const router = express.Router();
 
 const store = require("../Data/store");
@@ -8,17 +10,41 @@ const store = require("../Data/store");
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
 
+const TARGET_IP = process.env.VPS_IP || "82.29.155.252";
+
+// Helper function to safely check if this machine actually owns the public IP interface
+const checkLocalIpAvailability = (targetIp) => {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const net of interfaces[name]) {
+      if (net.address === targetIp) return true;
+    }
+  }
+  return false;
+};
+
+// Only bind localAddress if the server hardware actually owns that IP (Prevents local crash)
+const isIpValidOnMachine = checkLocalIpAvailability(TARGET_IP);
+const staticIpAgent = isIpValidOnMachine ? new https.Agent({ localAddress: TARGET_IP }) : null;
+
 const getHeaders = () => ({
   "Client-ID": CLIENT_ID,
 });
 
 const fetchMatch = async (id) => {
-  // Debug log to confirm exact upstream requests in PM2
-  console.log(`📡 Axios fetching from URL: ${API_URL}/${id}`);
-  
-  const res = await axios.get(`${API_URL}/${id}`, {
+  const config = {
     headers: getHeaders(),
-  });
+    timeout: 5000 // Prevent request hanging
+  };
+
+  if (staticIpAgent) {
+    console.log(`📡 [PROXY ACTIVE] Axios fetching from URL: ${API_URL}/${id} via localAddress: ${TARGET_IP}`);
+    config.httpsAgent = staticIpAgent;
+  } else {
+    console.log(`📡 [STANDARD GATEWAY] OS does not own ${TARGET_IP} or running locally. Route via standard interface.`);
+  }
+  
+  const res = await axios.get(`${API_URL}/${id}`, config);
   return res.data;
 };
 
@@ -26,24 +52,22 @@ const getTeams = (data) => data?.match?.team_stats || data?.team_stats || [];
 
 const mergeTeam = (team) => {
   const teamIdKey = team.team_id || team.id;
-  const meta = store.teamMap?.[String(teamIdKey)];
+  
+  // Guard clause: Safe fallback if store or teamMap failed to initialize from the Database/Sheet
+  const meta = (store && store.teamMap) ? store.teamMap[String(teamIdKey)] : null;
 
   const base = process.env.BASE_URL || "";
   
-  // Helper function to safely format asset locations
   const formatImgUri = (fieldValue) => {
     if (!fieldValue) return "";
-    // If the value in the sheet is already a full URL, return it as-is
     if (fieldValue.startsWith("http://") || fieldValue.startsWith("https://")) {
       return fieldValue;
     }
-    // Otherwise, treat it as a local filename and append your backend uploads directory
     return `${base}/uploads/${fieldValue}`;
   };
 
   return {
     ...team,
-    // Merge properties safely, falling back to live match API keys if the sheet column is blank
     team_name: meta?.team_name || team.team_name,
     teamTag: meta?.short_tag || team.teamTag || "",
     teamLogo: formatImgUri(meta?.team_logo) || team.teamLogo || "",
@@ -63,7 +87,6 @@ const buildStandings = async (id) => {
 };
 
 /* ================= WS FRAME HELPER ================= */
-// Helper to package raw text/JSON data into a standard WebSocket Text Frame (Opcode 0x1)
 const frameWSFrame = (payload) => {
   const dataBuffer = Buffer.from(payload, "utf8");
   const len = dataBuffer.length;
@@ -82,16 +105,14 @@ const frameWSFrame = (payload) => {
     frame.writeBigUInt64BE(BigInt(len), 2);
   }
   
-  frame[0] = 0x81; // 0x80 (FIN bit set) + 0x01 (Text Frame opcode)
+  frame[0] = 0x81; 
   dataBuffer.copy(frame, frame.length - len);
   return frame;
 };
 
-/* ================= WS ROUTE PARSER (FIXED) ================= */
+/* ================= WS ROUTE PARSER ================= */
 const parseWS = (url = "") => {
   if (!url) return null;
-
-  // Flexible regex matching: extracts route endpoints while tossing query strings/trailing slashes
   const match = url.match(/\/(?:ws\/)?(realtime|tablestandings)\/([^/?#]+)/);
   if (!match) return null;
 
@@ -104,14 +125,12 @@ const parseWS = (url = "") => {
 const handleWS = (req, socket) => {
   const route = parseWS(req.url);
   
-  // 🛡️ Guard 1: Drop invalid layout attempts immediately
   if (!route) {
     console.log(`🚫 Rejecting invalid WS URL structure: ${req.url}`);
     return false;
   }
 
-  // 🛡️ Guard 2: Prevent React component initialization strings from triggering 404 loops
-  if (route.matchId === "12345" || route.matchId === "undefined" || !route.matchId) {
+  if (!route.matchId || route.matchId === "undefined") {
     console.log(`⏳ WebSocket handshake active on /${route.type}/, awaiting valid tournament Match ID...`);
     return true; 
   }
@@ -141,14 +160,21 @@ const handleWS = (req, socket) => {
         data,
       });
 
-      socket.write(frameWSFrame(jsonString));
+      if (socket.writable) {
+        socket.write(frameWSFrame(jsonString));
+      }
     } catch (err) {
-      console.error(`❌ Error broadcasting match standings [ID: ${route.matchId}]:`, err.message);
+      // Enhanced diagnostic logging to trace exact response text from Garena's API gateway
+      if (err.response) {
+        console.error(`❌ Garena API Rejected Request [Status ${err.response.status}]:`, JSON.stringify(err.response.data));
+      } else {
+        console.error(`❌ Error fetching/broadcasting match standings [ID: ${route.matchId}]:`, err.message);
+      }
     }
   };
 
-  // Adjusted interval rate to 1500ms to preserve network connection stability and guard API limits
-  const interval = setInterval(send, 1500);
+  const intervalDuration = parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1500;
+  const interval = setInterval(send, intervalDuration);
 
   socket.on("close", () => {
     console.log(`🔌 Client disconnected from Match ID: ${route.matchId}`);

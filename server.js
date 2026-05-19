@@ -9,6 +9,9 @@ const dotenv = require("dotenv");
 /* SAFE NODE_ENV (VERY IMPORTANT FOR VPS) */
 const NODE_ENV = process.env.NODE_ENV || "development";
 
+// Crucial step: Explicitly attach it to process.env so router files can see it
+process.env.NODE_ENV = NODE_ENV; 
+
 const envFile =
   NODE_ENV === "production"
     ? ".env.production"
@@ -18,6 +21,7 @@ dotenv.config({ path: envFile });
 
 /* DEBUG (TEMP BUT IMPORTANT) */
 console.log("📦 ENV LOADED FILE:", envFile);
+console.log("⚙️ RUNNING IN MODE:", process.env.NODE_ENV);
 console.log("🔑 DB_PASSWORD EXISTS:", !!process.env.DB_PASSWORD);
 
 /* Safety check */
