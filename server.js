@@ -155,7 +155,7 @@ app.get("/version", (req, res) => {
   return res.json({
     success: true,
     service: "Tournament-Realtime-Data-Streamer",
-    version: "1.2.0 ws",
+    version: "1.2.0 array object team table create",
     environment: process.env.NODE_ENV,
     timestamp: new Date().toISOString()
   });
