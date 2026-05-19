@@ -15,7 +15,6 @@ const initDB = async () => {
       );
     `);
 
-    console.log("✅ Teams table ready");
 
     // optional but recommended for esports realtime performance
     await pool.query(`
