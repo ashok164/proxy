@@ -27,28 +27,30 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+/* ================= BASE URL HELPER ================= */
+const getBaseUrl = (req) => `${req.protocol}://${req.get("host")}`;
+
 /* =========================================================
-   CREATE TEAMS (ARRAY SUPPORT)
+   CREATE TEAMS
 ========================================================= */
 router.post("/create", async (req, res) => {
   try {
     const teams = req.body;
 
-    // validation
     if (!Array.isArray(teams)) {
       return res.status(400).json({
         success: false,
-        message: "Request body must be an array of teams",
+        message: "Request body must be an array",
       });
     }
 
-    const insertedTeams = [];
+    const baseUrl = getBaseUrl(req);
+    const inserted = [];
 
     for (const team of teams) {
       const result = await pool.query(
-        `INSERT INTO teams 
-          (team_id, team_name, short_tag, team_logo, country_logo)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo)
+         VALUES ($1,$2,$3,$4,$5)
          RETURNING *`,
         [
           team.teamId,
@@ -59,20 +61,28 @@ router.post("/create", async (req, res) => {
         ]
       );
 
-      insertedTeams.push(result.rows[0]);
+      const row = result.rows[0];
+
+      row.team_logo = row.team_logo
+        ? `${baseUrl}/uploads/${row.team_logo}`
+        : null;
+
+      row.country_logo = row.country_logo
+        ? `${baseUrl}/uploads/${row.country_logo}`
+        : null;
+
+      inserted.push(row);
     }
 
-    return res.json({
+    res.json({
       success: true,
-      message: "Teams created successfully",
-      data: insertedTeams,
+      data: inserted,
     });
   } catch (err) {
     console.error("CREATE ERROR:", err);
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: "Create failed",
-      error: err.message,
+      message: err.message,
     });
   }
 });
@@ -82,19 +92,30 @@ router.post("/create", async (req, res) => {
 ========================================================= */
 router.get("/all", async (req, res) => {
   try {
+    const baseUrl = getBaseUrl(req);
+
     const result = await pool.query(
       "SELECT * FROM teams ORDER BY id DESC"
     );
 
-    return res.json({
+    const data = result.rows.map((row) => ({
+      ...row,
+      team_logo: row.team_logo
+        ? `${baseUrl}/uploads/${row.team_logo}`
+        : null,
+      country_logo: row.country_logo
+        ? `${baseUrl}/uploads/${row.country_logo}`
+        : null,
+    }));
+
+    res.json({
       success: true,
-      data: result.rows,
+      data,
     });
   } catch (err) {
-    console.error("GET ALL ERROR:", err);
-    return res.status(500).json({
+    console.error(err);
+    res.status(500).json({
       success: false,
-      message: "Fetch failed",
     });
   }
 });
@@ -104,35 +125,42 @@ router.get("/all", async (req, res) => {
 ========================================================= */
 router.get("/:id", async (req, res) => {
   try {
-    const { id } = req.params;
+    const baseUrl = getBaseUrl(req);
 
     const result = await pool.query(
       "SELECT * FROM teams WHERE id = $1",
-      [id]
+      [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (!result.rows.length) {
       return res.status(404).json({
         success: false,
-        message: "Team not found",
+        message: "Not found",
       });
     }
 
-    return res.json({
+    const row = result.rows[0];
+
+    row.team_logo = row.team_logo
+      ? `${baseUrl}/uploads/${row.team_logo}`
+      : null;
+
+    row.country_logo = row.country_logo
+      ? `${baseUrl}/uploads/${row.country_logo}`
+      : null;
+
+    res.json({
       success: true,
-      data: result.rows[0],
+      data: row,
     });
   } catch (err) {
-    console.error("GET ONE ERROR:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Fetch failed",
-    });
+    console.error(err);
+    res.status(500).json({ success: false });
   }
 });
 
 /* =========================================================
-   UPDATE TEAM (WITH FILE UPLOAD)
+   UPDATE TEAM (WITH IMAGE UPLOAD)
 ========================================================= */
 router.put(
   "/update/:id",
@@ -142,7 +170,8 @@ router.put(
   ]),
   async (req, res) => {
     try {
-      const id = req.params.id;
+      const baseUrl = getBaseUrl(req);
+
       const { teamId, teamName, shortTag } = req.body;
 
       const teamLogo = req.files?.teamLogo?.[0]?.filename || null;
@@ -150,40 +179,42 @@ router.put(
 
       const result = await pool.query(
         `UPDATE teams
-         SET team_id = $1,
-             team_name = $2,
-             short_tag = $3,
-             team_logo = COALESCE($4, team_logo),
-             country_logo = COALESCE($5, country_logo),
-             updated_at = NOW()
-         WHERE id = $6
+         SET team_id=$1,
+             team_name=$2,
+             short_tag=$3,
+             team_logo=COALESCE($4, team_logo),
+             country_logo=COALESCE($5, country_logo),
+             updated_at=NOW()
+         WHERE id=$6
          RETURNING *`,
-        [
-          teamId,
-          teamName,
-          shortTag || null,
-          teamLogo,
-          countryLogo,
-          id,
-        ]
+        [teamId, teamName, shortTag, teamLogo, countryLogo, req.params.id]
       );
 
-      if (result.rows.length === 0) {
+      if (!result.rows.length) {
         return res.status(404).json({
           success: false,
-          message: "Team not found",
+          message: "Not found",
         });
       }
 
-      return res.json({
+      const row = result.rows[0];
+
+      row.team_logo = row.team_logo
+        ? `${baseUrl}/uploads/${row.team_logo}`
+        : null;
+
+      row.country_logo = row.country_logo
+        ? `${baseUrl}/uploads/${row.country_logo}`
+        : null;
+
+      res.json({
         success: true,
-        data: result.rows[0],
+        data: row,
       });
     } catch (err) {
-      console.error("UPDATE ERROR:", err);
-      return res.status(500).json({
+      console.error(err);
+      res.status(500).json({
         success: false,
-        message: "Update failed",
       });
     }
   }
@@ -194,29 +225,26 @@ router.put(
 ========================================================= */
 router.delete("/delete/:id", async (req, res) => {
   try {
-    const { id } = req.params;
-
     const result = await pool.query(
-      "DELETE FROM teams WHERE id = $1 RETURNING *",
-      [id]
+      "DELETE FROM teams WHERE id=$1 RETURNING *",
+      [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (!result.rows.length) {
       return res.status(404).json({
         success: false,
-        message: "Team not found",
+        message: "Not found",
       });
     }
 
-    return res.json({
+    res.json({
       success: true,
       message: "Deleted successfully",
     });
   } catch (err) {
-    console.error("DELETE ERROR:", err);
-    return res.status(500).json({
+    console.error(err);
+    res.status(500).json({
       success: false,
-      message: "Delete failed",
     });
   }
 });

@@ -2,36 +2,36 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const axios = require("axios");
-const path = require("path"); // ✅ IMPORTANT FIX
-
-/* ================= ENV FIX (LOCAL + PROD) ================= */
+const path = require("path");
 const dotenv = require("dotenv");
 
+/* ================= ENV ================= */
 const NODE_ENV = process.env.NODE_ENV || "development";
 process.env.NODE_ENV = NODE_ENV;
 
-const envFile = NODE_ENV === "production" ? ".env.production" : ".env.local";
+const envFile =
+  NODE_ENV === "production" ? ".env.production" : ".env.local";
 
 dotenv.config({ path: envFile });
 
-console.log("📦 ENV LOADED FILE:", envFile);
-console.log("⚙️ RUNNING IN MODE:", process.env.NODE_ENV);
-console.log("🔑 DB_PASSWORD EXISTS:", !!process.env.DB_PASSWORD);
+console.log("📦 ENV FILE:", envFile);
+console.log("⚙️ MODE:", process.env.NODE_ENV);
 
 if (!process.env.DB_PASSWORD) {
-  console.error("❌ DB_PASSWORD missing in env file");
+  console.error("❌ DB_PASSWORD missing");
   process.exit(1);
 }
-/* ================= ENV FIX END ================= */
 
+/* ================= APP ================= */
 const app = express();
 const server = http.createServer(app);
 
+/* ================= DB ================= */
 const initDB = require("./Database/initDB");
 const pool = require("./Database/db");
 const store = require("./Data/store");
 
-/* ================= DB INIT SAFE ================= */
+/* ================= INIT DB ================= */
 (async () => {
   try {
     await initDB();
@@ -44,16 +44,16 @@ const store = require("./Data/store");
 /* ================= MIDDLEWARE ================= */
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-/* ================= STATIC FILE FIX (IMPORTANT) ================= */
-// ❌ OLD (BROKEN IN VPS)
-// app.use("/uploads", express.static("uploads"));
+/* =========================================================
+   🔥 IMPORTANT FIX: MAKE UPLOADS PUBLIC (VPS SAFE)
+========================================================= */
+const uploadPath = path.join(__dirname, "uploads");
 
-// ✅ FIXED VERSION (VPS SAFE)
-app.use(
-  "/uploads",
-  express.static(path.join(__dirname, "uploads"))
-);
+app.use("/uploads", express.static(uploadPath));
+
+console.log("📁 Uploads exposed at /uploads");
 
 /* ================= CONFIG ================= */
 const PORT = process.env.PORT || 3000;
@@ -89,7 +89,6 @@ const parseCSVToArray = (csvText) => {
         short_tag: obj.team_tag || obj.short_tag || obj.tag || "",
         team_logo: obj.team_logo || "",
         country_logo: obj.country_logo || "",
-        avatar_id: obj.avatar_id || "",
       });
     }
   }
@@ -110,7 +109,7 @@ const syncSheetToPostgres = async () => {
     const teams = parseCSVToArray(res.data);
 
     if (!store.teamMap) store.teamMap = {};
-    else Object.keys(store.teamMap).forEach(k => delete store.teamMap[k]);
+    else Object.keys(store.teamMap).forEach((k) => delete store.teamMap[k]);
 
     for (const t of teams) {
       store.teamMap[String(t.team_id)] = t;
@@ -135,7 +134,7 @@ const syncSheetToPostgres = async () => {
   }
 };
 
-/* ================= START SYNC ================= */
+/* ================= AUTO SYNC ================= */
 setTimeout(syncSheetToPostgres, 5000);
 setInterval(syncSheetToPostgres, 30000);
 
@@ -150,41 +149,40 @@ app.use("/api/teams", teamRoutes);
 
 /* ================= VERSION ================= */
 app.get("/version", (req, res) => {
-  return res.json({
+  res.json({
     success: true,
     service: "Tournament-Realtime-Data-Streamer",
-    version: "1.2.0 array object team table create",
+    version: "2",
     environment: process.env.NODE_ENV,
     timestamp: new Date().toISOString(),
   });
 });
 
-/* ================= SERVER START ================= */
+/* ================= SERVER ================= */
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on ${PORT}`);
 });
 
-/* ================= WS UPGRADE ================= */
-server.on("upgrade", (req, socket, head) => {
+/* ================= WEBSOCKET ================= */
+server.on("upgrade", (req, socket) => {
   try {
     const isWebSocket =
-      req.headers.upgrade && req.headers.upgrade.toLowerCase() === "websocket";
+      req.headers.upgrade &&
+      req.headers.upgrade.toLowerCase() === "websocket";
 
     if (!isWebSocket) return;
 
-    const clientVersion = req.headers["x-client-version"];
-    console.log("🔌 WS Client version:", clientVersion || "None");
-
-    const handled = realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
+    const handled =
+      realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
 
     if (!handled) socket.destroy();
   } catch (err) {
-    console.error("❌ WS upgrade error:", err.message);
+    console.error("❌ WS error:", err.message);
     socket.destroy();
   }
 });
 
-/* ================= GLOBAL ERRORS ================= */
+/* ================= ERROR HANDLING ================= */
 process.on("unhandledRejection", (err) => {
   console.error("❌ Unhandled Rejection:", err.message);
 });
