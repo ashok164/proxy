@@ -10,12 +10,9 @@ const dotenv = require("dotenv");
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 // Crucial step: Explicitly attach it to process.env so router files can see it
-process.env.NODE_ENV = NODE_ENV; 
+process.env.NODE_ENV = NODE_ENV;
 
-const envFile =
-  NODE_ENV === "production"
-    ? ".env.production"
-    : ".env.local";
+const envFile = NODE_ENV === "production" ? ".env.production" : ".env.local";
 
 dotenv.config({ path: envFile });
 
@@ -124,7 +121,7 @@ const syncSheetToPostgres = async () => {
            team_name = EXCLUDED.team_name,
            short_tag = EXCLUDED.short_tag,
            updated_at = NOW()`,
-        [t.team_id, t.team_name, t.short_tag]
+        [t.team_id, t.team_name, t.short_tag],
       );
     }
 
@@ -148,6 +145,7 @@ const teamRoutes = require("./Routes/teamRecord");
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
 app.use("/api/teams", teamRoutes);
+app.use("/uploads", express.static("uploads"));
 
 /* ================= EXPLICIT VERSION ENDPOINT ================= */
 // Target URL: http://localhost:3000/version
@@ -157,7 +155,7 @@ app.get("/version", (req, res) => {
     service: "Tournament-Realtime-Data-Streamer",
     version: "1.2.0 array object team table create",
     environment: process.env.NODE_ENV,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -169,22 +167,29 @@ server.listen(PORT, "0.0.0.0", () => {
 /* ================= WS UPGRADE SEQUENCE WITH VERSION MANAGEMENT ================= */
 server.on("upgrade", (req, socket, head) => {
   try {
-    const isWebSocket = req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket';
-    
+    const isWebSocket =
+      req.headers.upgrade && req.headers.upgrade.toLowerCase() === "websocket";
+
     // If it's a browser page lookup (HTTP GET), hand off control back to standard Express handlers
     if (!isWebSocket) {
-      return; 
+      return;
     }
 
     /* === OPTIONAL: WS LEVEL CLIENT VERSION GATEWAY === */
     // If you pass "x-client-version" in your handshake config, you can explicitly reject older software
     const clientVersion = req.headers["x-client-version"];
-    console.log(`🔌 Incoming WS upgrade handshake connection. Client build version: ${clientVersion || "None Provided"}`);
+    console.log(
+      `🔌 Incoming WS upgrade handshake connection. Client build version: ${
+        clientVersion || "None Provided"
+      }`,
+    );
 
     const handled = realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
 
     if (!handled) {
-      console.log("⚠️ WS Upgrade request matched nothing or failed verification. Closing connection.");
+      console.log(
+        "⚠️ WS Upgrade request matched nothing or failed verification. Closing connection.",
+      );
       socket.destroy();
     }
   } catch (err) {
