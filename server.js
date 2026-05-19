@@ -2,7 +2,30 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const axios = require("axios");
-require("dotenv").config();
+
+/* ================= ENV FIX (LOCAL + PROD) ================= */
+const dotenv = require("dotenv");
+
+/* SAFE NODE_ENV (VERY IMPORTANT FOR VPS) */
+const NODE_ENV = process.env.NODE_ENV || "development";
+
+const envFile =
+  NODE_ENV === "production"
+    ? ".env.production"
+    : ".env.local";
+
+dotenv.config({ path: envFile });
+
+/* DEBUG (TEMP BUT IMPORTANT) */
+console.log("📦 ENV LOADED FILE:", envFile);
+console.log("🔑 DB_PASSWORD EXISTS:", !!process.env.DB_PASSWORD);
+
+/* Safety check */
+if (!process.env.DB_PASSWORD) {
+  console.error("❌ DB_PASSWORD missing in env file");
+  process.exit(1);
+}
+/* ================= ENV FIX END ================= */
 
 const app = express();
 const server = http.createServer(app);
@@ -12,7 +35,15 @@ const pool = require("./Database/db");
 
 const store = require("./Data/store");
 
-initDB();
+/* ================= DB INIT SAFE ================= */
+(async () => {
+  try {
+    await initDB();
+    console.log("✅ DB initialized");
+  } catch (err) {
+    console.error("❌ initDB error:", err.message);
+  }
+})();
 
 app.use(cors());
 app.use(express.json());
@@ -20,13 +51,11 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const SHEET_URL = process.env.SHEET_URL;
 
-/* ================= SYNC SHEET ================= */
-/* ================= SYNC SHEET ================= */
+/* ================= CSV PARSER ================= */
 const parseCSVToArray = (csvText) => {
   const lines = csvText.split("\n");
   if (!lines.length) return [];
 
-  // Clean and normalize headers (e.g., "Team Logo" becomes "team_logo")
   const headers = lines[0]
     .split(",")
     .map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
@@ -43,7 +72,6 @@ const parseCSVToArray = (csvText) => {
       obj[h] = row[idx] || "";
     });
 
-    // Handle flexible variations of the primary ID column key
     const currentId = obj.team_id || obj.id;
 
     if (currentId) {
@@ -51,9 +79,9 @@ const parseCSVToArray = (csvText) => {
         team_id: String(currentId),
         team_name: obj.team_name || obj.name || "",
         short_tag: obj.team_tag || obj.short_tag || obj.tag || "",
-        team_logo: obj.team_logo || "", // Extracted from Column E
-        country_logo: obj.country_logo || "", // Extracted from Column F
-        avatar_id: obj.avatar_id || "", // Extracted from Column G
+        team_logo: obj.team_logo || "",
+        country_logo: obj.country_logo || "",
+        avatar_id: obj.avatar_id || "",
       });
     }
   }
@@ -61,13 +89,18 @@ const parseCSVToArray = (csvText) => {
   return records;
 };
 
+/* ================= SYNC LOCK ================= */
+let isSyncing = false;
+
+/* ================= SYNC SHEET ================= */
 const syncSheetToPostgres = async () => {
+  if (isSyncing) return;
+  isSyncing = true;
+
   try {
     const res = await axios.get(SHEET_URL);
     const teams = parseCSVToArray(res.data);
 
-    // FIX: Do NOT do store.teamMap = {};
-    // Instead, safely clear the existing properties without breaking module references
     if (!store.teamMap) {
       store.teamMap = {};
     } else {
@@ -77,7 +110,6 @@ const syncSheetToPostgres = async () => {
     }
 
     for (const t of teams) {
-      // Direct assignment mutates the referenced object correctly
       store.teamMap[String(t.team_id)] = t;
 
       await pool.query(
@@ -88,21 +120,20 @@ const syncSheetToPostgres = async () => {
            team_name = EXCLUDED.team_name,
            short_tag = EXCLUDED.short_tag,
            updated_at = NOW()`,
-        [t.team_id, t.team_name, t.short_tag],
+        [t.team_id, t.team_name, t.short_tag]
       );
     }
 
     console.log("🔄 Sheet synced:", teams.length);
-    console.log(
-      "📦 Current store.teamMap contents:",
-      JSON.stringify(store.teamMap),
-    );
   } catch (err) {
     console.error("❌ Sync error:", err.message);
+  } finally {
+    isSyncing = false;
   }
 };
 
-syncSheetToPostgres();
+/* ================= START SYNC ================= */
+setTimeout(syncSheetToPostgres, 5000);
 setInterval(syncSheetToPostgres, 30000);
 
 /* ================= ROUTES ================= */
@@ -119,11 +150,24 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on ${PORT}`);
 });
 
-// Inside your app.js (Main File) where server.listen sits:
+/* ================= WS UPGRADE SAFE ================= */
 server.on("upgrade", (req, socket, head) => {
-  // Pass the raw upgrade down to your real-time router explicitly
-  const handled = realtimeRoutes.handleRealtimeWebSocket(req, socket);
-  if (!handled) {
-    socket.destroy(); // Destroys bad connections that don't match your sub-routes
+  try {
+    const handled =
+      realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
+
+    if (!handled) socket.destroy();
+  } catch (err) {
+    console.error("❌ WS upgrade error:", err.message);
+    socket.destroy();
   }
+});
+
+/* ================= GLOBAL SAFETY ================= */
+process.on("unhandledRejection", (err) => {
+  console.error("❌ Unhandled Rejection:", err.message);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err.message);
 });
