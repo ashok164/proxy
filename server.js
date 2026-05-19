@@ -154,13 +154,24 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on ${PORT}`);
 });
 
-/* ================= WS UPGRADE SAFE ================= */
+/* ================= WS UPGRADE SAFE (FIXED BLUNDER) ================= */
 server.on("upgrade", (req, socket, head) => {
   try {
-    const handled =
-      realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
+    // Check if the request is intentionally looking for a WebSocket protocol upgrade
+    const isWebSocket = req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket';
+    
+    // BLUNDER FIX: If it's a standard HTTP GET browser load (not a WebSocket), exit early.
+    // This allows the request to trickle down safely to your standard Express route below.
+    if (!isWebSocket) {
+      return; 
+    }
 
-    if (!handled) socket.destroy();
+    const handled = realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
+
+    if (!handled) {
+      console.log("⚠️ WS Upgrade request matched nothing or failed verification. Closing connection.");
+      socket.destroy();
+    }
   } catch (err) {
     console.error("❌ WS upgrade error:", err.message);
     socket.destroy();

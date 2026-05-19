@@ -136,7 +136,8 @@ const handleWS = (req, socket) => {
   }
 
   const key = req.headers["sec-websocket-key"];
-  if (!key) return true;
+  // BLUNDER FIX: Return false if handshake security key doesn't exist so server.js doesn't treat this like a bad WS connection
+  if (!key) return false; 
 
   const accept = crypto
     .createHash("sha1")
@@ -164,7 +165,6 @@ const handleWS = (req, socket) => {
         socket.write(frameWSFrame(jsonString));
       }
     } catch (err) {
-      // Enhanced diagnostic logging to trace exact response text from Garena's API gateway
       if (err.response) {
         console.error(`❌ Garena API Rejected Request [Status ${err.response.status}]:`, JSON.stringify(err.response.data));
       } else {
@@ -186,6 +186,46 @@ const handleWS = (req, socket) => {
   send();
   return true;
 };
+
+/* ================= NEW EXPLICIT HTTP BROWSER ROUTE HANDLERS ================= */
+
+// Handles browser path structure: http://82.29.155.252:3000/ws/realtime/1865398120330647552
+router.get("/ws/realtime/:matchId", async (req, res) => {
+  try {
+    const matchId = req.params.matchId;
+    console.log(`🌐 Browser HTTP GET request received for Match ID: ${matchId}`);
+    
+    const standingsData = await buildStandings(matchId);
+    
+    return res.json({
+      success: true,
+      type: "tablestandings_static",
+      data: standingsData
+    });
+  } catch (err) {
+    console.error("❌ Browser GET /ws/realtime Error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Handles alternate path structure: http://82.29.155.252:3000/realtime/1865398120330647552
+router.get("/realtime/:matchId", async (req, res) => {
+  try {
+    const matchId = req.params.matchId;
+    console.log(`🌐 Browser HTTP GET request received for Match ID (alternate path): ${matchId}`);
+    
+    const standingsData = await buildStandings(matchId);
+    
+    return res.json({
+      success: true,
+      type: "tablestandings_static",
+      data: standingsData
+    });
+  } catch (err) {
+    console.error("❌ Browser GET /realtime Error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 router.handleRealtimeWebSocket = handleWS;
 
