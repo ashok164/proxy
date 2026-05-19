@@ -34,7 +34,7 @@ const getHeaders = () => ({
 const fetchMatch = async (id) => {
   const config = {
     headers: getHeaders(),
-    timeout: 5000 // Prevent request hanging
+    timeout: 60000 // Prevent request hanging
   };
 
   if (staticIpAgent) {
