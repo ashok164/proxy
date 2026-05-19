@@ -149,22 +149,37 @@ app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
 app.use("/api/teams", teamRoutes);
 
+/* ================= EXPLICIT VERSION ENDPOINT ================= */
+// Target URL: http://localhost:3000/version
+app.get("/version", (req, res) => {
+  return res.json({
+    success: true,
+    service: "Tournament-Realtime-Data-Streamer",
+    version: "1.2.0 trying ws",
+    environment: process.env.NODE_ENV,
+    timestamp: new Date().toISOString()
+  });
+});
+
 /* ================= SERVER ================= */
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on ${PORT}`);
 });
 
-/* ================= WS UPGRADE SAFE (FIXED BLUNDER) ================= */
+/* ================= WS UPGRADE SEQUENCE WITH VERSION MANAGEMENT ================= */
 server.on("upgrade", (req, socket, head) => {
   try {
-    // Check if the request is intentionally looking for a WebSocket protocol upgrade
     const isWebSocket = req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket';
     
-    // BLUNDER FIX: If it's a standard HTTP GET browser load (not a WebSocket), exit early.
-    // This allows the request to trickle down safely to your standard Express route below.
+    // If it's a browser page lookup (HTTP GET), hand off control back to standard Express handlers
     if (!isWebSocket) {
       return; 
     }
+
+    /* === OPTIONAL: WS LEVEL CLIENT VERSION GATEWAY === */
+    // If you pass "x-client-version" in your handshake config, you can explicitly reject older software
+    const clientVersion = req.headers["x-client-version"];
+    console.log(`🔌 Incoming WS upgrade handshake connection. Client build version: ${clientVersion || "None Provided"}`);
 
     const handled = realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
 
