@@ -70,12 +70,12 @@ const safelyDeleteFiles = (filesArray) => {
 router.post(
   "/create",
   upload.fields([
-    { name: "teamLogo", maxCount: 20 },   // Dynamic batch allowance boundary scale
+    { name: "teamLogo", maxCount: 20 }, // Dynamic batch allowance boundary scale
     { name: "countryLogo", maxCount: 20 },
   ]),
   async (req, res) => {
     const baseUrl = getBaseUrl(req);
-    
+
     // Track references to roll back files if database transactions fail
     const rollbackCache = [];
     if (req.files?.teamLogo) rollbackCache.push(...req.files.teamLogo);
@@ -93,13 +93,22 @@ router.post(
 
       if (!teamIdInput) {
         safelyDeleteFiles(rollbackCache);
-        return res.status(400).json({ success: false, message: "No team records found or teamId missing" });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message: "No team records found or teamId missing",
+          });
       }
 
       // Convert standalone single item strings to iterable arrays for uniformity
       const teamIds = Array.isArray(teamIdInput) ? teamIdInput : [teamIdInput];
-      const teamNames = Array.isArray(teamNameInput) ? teamNameInput : [teamNameInput];
-      const shortTags = Array.isArray(shortTagInput) ? shortTagInput : [shortTagInput];
+      const teamNames = Array.isArray(teamNameInput)
+        ? teamNameInput
+        : [teamNameInput];
+      const shortTags = Array.isArray(shortTagInput)
+        ? shortTagInput
+        : [shortTagInput];
 
       // Safe indexed tracking pointers for binary attachments
       let teamLogoIndex = 0;
@@ -123,7 +132,8 @@ router.post(
         const teamLogo = req.files?.teamLogo?.[teamLogoIndex]?.filename || null;
         teamLogoIndex++;
 
-        const countryLogo = req.files?.countryLogo?.[countryLogoIndex]?.filename || null;
+        const countryLogo =
+          req.files?.countryLogo?.[countryLogoIndex]?.filename || null;
         countryLogoIndex++;
 
         const result = await pool.query(
@@ -139,12 +149,16 @@ router.post(
             updated_at = NOW()
           RETURNING *
           `,
-          [teamId, teamName, shortTag, teamLogo, countryLogo]
+          [teamId, teamName, shortTag, teamLogo, countryLogo],
         );
 
         const row = result.rows[0];
-        row.team_logo = row.team_logo ? `${baseUrl}/uploads/${row.team_logo}` : null;
-        row.country_logo = row.country_logo ? `${baseUrl}/uploads/${row.country_logo}` : null;
+        row.team_logo = row.team_logo
+          ? `${baseUrl}/uploads/${row.team_logo}`
+          : null;
+        row.country_logo = row.country_logo
+          ? `${baseUrl}/uploads/${row.country_logo}`
+          : null;
         processedRows.push(row);
       }
 
@@ -158,7 +172,7 @@ router.post(
       console.error("Bulk upload processing execution caught error:", err);
       res.status(500).json({ success: false, message: err.message });
     }
-  }
+  },
 );
 
 /* =========================================================
@@ -169,10 +183,23 @@ router.get("/all", async (req, res) => {
     const baseUrl = getBaseUrl(req);
     const result = await pool.query("SELECT * FROM teams ORDER BY id DESC");
 
+    // Helper function to safely format the image URL
+    const formatImageUrl = (logoPath) => {
+      if (!logoPath) return null;
+
+      // If it already contains http:// or https://, return it exactly as it is
+      if (logoPath.startsWith("http://") || logoPath.startsWith("https://")) {
+        return logoPath;
+      }
+
+      // Otherwise, append your local/VPS hosting base URL path
+      return `${baseUrl}/uploads/${logoPath}`;
+    };
+
     const data = result.rows.map((row) => ({
       ...row,
-      team_logo: row.team_logo ? `${baseUrl}/uploads/${row.team_logo}` : null,
-      country_logo: row.country_logo ? `${baseUrl}/uploads/${row.country_logo}` : null,
+      team_logo: formatImageUrl(row.team_logo),
+      country_logo: formatImageUrl(row.country_logo),
     }));
 
     res.json({ success: true, data });
@@ -188,15 +215,23 @@ router.get("/all", async (req, res) => {
 router.get("/:id", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
-    const result = await pool.query("SELECT * FROM teams WHERE id = $1", [req.params.id]);
+    const result = await pool.query("SELECT * FROM teams WHERE id = $1", [
+      req.params.id,
+    ]);
 
     if (!result.rows.length) {
-      return res.status(404).json({ success: false, message: "Team not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Team not found" });
     }
 
     const row = result.rows[0];
-    row.team_logo = row.team_logo ? `${baseUrl}/uploads/${row.team_logo}` : null;
-    row.country_logo = row.country_logo ? `${baseUrl}/uploads/${row.country_logo}` : null;
+    row.team_logo = row.team_logo
+      ? `${baseUrl}/uploads/${row.team_logo}`
+      : null;
+    row.country_logo = row.country_logo
+      ? `${baseUrl}/uploads/${row.country_logo}`
+      : null;
 
     res.json({ success: true, data: row });
   } catch (err) {
@@ -217,17 +252,23 @@ router.put(
   async (req, res) => {
     try {
       const baseUrl = getBaseUrl(req);
-      const oldTeam = await pool.query("SELECT * FROM teams WHERE id = $1", [req.params.id]);
+      const oldTeam = await pool.query("SELECT * FROM teams WHERE id = $1", [
+        req.params.id,
+      ]);
 
       if (!oldTeam.rows.length) {
-        return res.status(404).json({ success: false, message: "Team not found" });
+        return res
+          .status(404)
+          .json({ success: false, message: "Team not found" });
       }
 
       const existing = oldTeam.rows[0];
 
       const teamId = req.body.teamId || req.body.team_id || existing.team_id;
-      const teamName = req.body.teamName || req.body.team_name || existing.team_name;
-      const shortTag = req.body.shortTag || req.body.short_tag || existing.short_tag;
+      const teamName =
+        req.body.teamName || req.body.team_name || existing.team_name;
+      const shortTag =
+        req.body.shortTag || req.body.short_tag || existing.short_tag;
 
       const newTeamLogo = req.files?.teamLogo?.[0]?.filename;
       const newCountryLogo = req.files?.countryLogo?.[0]?.filename;
@@ -242,7 +283,7 @@ router.put(
         WHERE id = $6
         RETURNING *
         `,
-        [teamId, teamName, shortTag, teamLogo, countryLogo, req.params.id]
+        [teamId, teamName, shortTag, teamLogo, countryLogo, req.params.id],
       );
 
       // Remove stale disk files if new ones were uploaded
@@ -254,15 +295,19 @@ router.put(
       }
 
       const row = result.rows[0];
-      row.team_logo = row.team_logo ? `${baseUrl}/uploads/${row.team_logo}` : null;
-      row.country_logo = row.country_logo ? `${baseUrl}/uploads/${row.country_logo}` : null;
+      row.team_logo = row.team_logo
+        ? `${baseUrl}/uploads/${row.team_logo}`
+        : null;
+      row.country_logo = row.country_logo
+        ? `${baseUrl}/uploads/${row.country_logo}`
+        : null;
 
       res.json({ success: true, data: row });
     } catch (err) {
       console.error(err);
       res.status(500).json({ success: false, message: err.message });
     }
-  }
+  },
 );
 
 /* =========================================================
@@ -270,18 +315,25 @@ router.put(
 ========================================================= */
 router.delete("/delete/:id", async (req, res) => {
   try {
-    const result = await pool.query("DELETE FROM teams WHERE id = $1 RETURNING *", [req.params.id]);
+    const result = await pool.query(
+      "DELETE FROM teams WHERE id = $1 RETURNING *",
+      [req.params.id],
+    );
 
     if (!result.rows.length) {
-      return res.status(404).json({ success: false, message: "Team not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Team not found" });
     }
 
     const deletedRow = result.rows[0];
 
     // Wipe physical image assets off storage disk space clean
     const filesToDelete = [];
-    if (deletedRow.team_logo) filesToDelete.push(path.join(uploadPath, deletedRow.team_logo));
-    if (deletedRow.country_logo) filesToDelete.push(path.join(uploadPath, deletedRow.country_logo));
+    if (deletedRow.team_logo)
+      filesToDelete.push(path.join(uploadPath, deletedRow.team_logo));
+    if (deletedRow.country_logo)
+      filesToDelete.push(path.join(uploadPath, deletedRow.country_logo));
     safelyDeleteFiles(filesToDelete);
 
     res.json({ success: true, message: "Deleted successfully" });

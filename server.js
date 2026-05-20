@@ -9,8 +9,7 @@ const dotenv = require("dotenv");
 const NODE_ENV = process.env.NODE_ENV || "development";
 process.env.NODE_ENV = NODE_ENV;
 
-const envFile =
-  NODE_ENV === "production" ? ".env.production" : ".env.local";
+const envFile = NODE_ENV === "production" ? ".env.production" : ".env.local";
 
 dotenv.config({ path: envFile });
 
@@ -105,7 +104,19 @@ const syncSheetToPostgres = async () => {
   isSyncing = true;
 
   try {
-    const res = await axios.get(SHEET_URL);
+    // 🔥 FIX: Append a unique timestamp query parameter to bypass Google & Axios caches
+    const cacheBusterUrl = SHEET_URL.includes("?")
+      ? `${SHEET_URL}&_cb=${Date.now()}`
+      : `${SHEET_URL}?_cb=${Date.now()}`;
+
+    const res = await axios.get(cacheBusterUrl, {
+      headers: {
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+        Expires: "0",
+      },
+    });
+
     const teams = parseCSVToArray(res.data);
 
     if (!store.teamMap) store.teamMap = {};
@@ -115,18 +126,22 @@ const syncSheetToPostgres = async () => {
       store.teamMap[String(t.team_id)] = t;
 
       await pool.query(
-        `INSERT INTO teams (team_id, team_name, short_tag, updated_at)
-         VALUES ($1, $2, $3, NOW())
+        `INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT (team_id)
          DO UPDATE SET
            team_name = EXCLUDED.team_name,
            short_tag = EXCLUDED.short_tag,
+           team_logo = EXCLUDED.team_logo,
+           country_logo = EXCLUDED.country_logo,
            updated_at = NOW()`,
-        [t.team_id, t.team_name, t.short_tag]
+        [t.team_id, t.team_name, t.short_tag, t.team_logo, t.country_logo],
       );
     }
 
-    console.log("🔄 Sheet synced:", teams.length);
+    console.log(
+      `🔄 Sheet synced successfully: ${teams.length} teams processed.`,
+    );
   } catch (err) {
     console.error("❌ Sync error:", err.message);
   } finally {
@@ -167,13 +182,11 @@ server.listen(PORT, "0.0.0.0", () => {
 server.on("upgrade", (req, socket) => {
   try {
     const isWebSocket =
-      req.headers.upgrade &&
-      req.headers.upgrade.toLowerCase() === "websocket";
+      req.headers.upgrade && req.headers.upgrade.toLowerCase() === "websocket";
 
     if (!isWebSocket) return;
 
-    const handled =
-      realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
+    const handled = realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
 
     if (!handled) socket.destroy();
   } catch (err) {
