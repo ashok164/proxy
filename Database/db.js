@@ -5,7 +5,7 @@ const { Pool } = require("pg");
 const NODE_ENV = process.env.NODE_ENV || "development";
 process.env.NODE_ENV = NODE_ENV;
 
-const envFile = NODE_ENV === "production" ? ".env.production" : ".env.local";
+const envFile = NODE_ENV === "production" ? "../.env.production" : "../.env.local";
 
 dotenv.config({ path: envFile });
 /**========================================= */
