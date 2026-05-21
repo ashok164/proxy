@@ -36,7 +36,7 @@ const getHeaders = () => ({
 const fetchMatch = async (id) => {
   const config = {
     headers: getHeaders(),
-    timeout: 5000, // Reduced from 60s to 5s to prevent hanging threads from breaking the server
+    timeout: 5000, 
   };
 
   if (staticIpAgent) {
@@ -47,45 +47,61 @@ const fetchMatch = async (id) => {
   return res.data;
 };
 
-const getTeams = (data) => data?.match?.team_stats || data?.team_stats || [];
+const getTeams = (data) => data?.match?.team_stats || data?.team_stats || data?.teams || [];
 
 const mergeTeam = (team) => {
   if (!team) return {};
 
-  // 1. Safeguard checking for variations of ID matching
-  const teamIdKey = team.team_id || team.id || team.teamId;
-  const meta = store && store.teamMap ? store.teamMap[String(teamIdKey)] : null;
-  const base = process.env.BASE_URL || "";
+  // 1. Force extraction of ID and normalize to a clean, trimmed String string
+  const rawId = team.team_id || team.id || team.teamId || team.team_uid || team.teamCode;
+  const teamIdKey = rawId ? String(rawId).trim() : null;
+  
+  const meta = store && store.teamMap && teamIdKey ? store.teamMap[teamIdKey] : null;
+  const base = process.env.BASE_URL || "http://82.29.155.252:3000";
 
   const formatImgUri = (fieldValue) => {
     if (!fieldValue) return "";
 
-    // Clean up corrupted database prefixes if they contain broken port references like "52:3000/uploads/"
-    let cleanValue = fieldValue;
-    if (cleanValue.includes("52:3000/uploads/")) {
+    let cleanValue = String(fieldValue).trim();
+
+    // 🔥 CRITICAL FIX: Repair corrupted spreadsheet values missing the protocol and IP snippet
+    if (cleanValue.startsWith("52:3000/uploads/")) {
       cleanValue = cleanValue.replace("52:3000/uploads/", "");
     }
 
     if (cleanValue.startsWith("http://") || cleanValue.startsWith("https://")) {
       return cleanValue;
     }
-    return `${base}/uploads/${cleanValue}`;
+    
+    // Ensure no double slashes creep into generation pathing
+    return `${base.replace(/\/$/, "")}/uploads/${cleanValue.replace(/^\//, "")}`;
   };
 
-  // Extract metadata variables safely
+  // Safe Extraction of Sheet Metadata Assets
+  const dbTeamName = meta?.team_name || meta?.teamName || "";
   const dbShortTag = meta?.short_tag || meta?.shortTag || "";
-  const dbTeamLogo = formatImgUri(meta?.team_logo || meta?.teamLogo);
-  const dbCountryLogo = formatImgUri(meta?.country_logo || meta?.countryLogo);
+  const dbTeamLogo = meta?.team_logo || meta?.teamLogo ? formatImgUri(meta.team_logo || meta.teamLogo) : "";
+  const dbCountryLogo = meta?.country_logo || meta?.countryLogo ? formatImgUri(meta.country_logo || meta.countryLogo) : "";
+
+  // Dynamic Fallback Logic Cascade
+  const finalTeamName = dbTeamName || team.team_name || team.name || "";
+  const finalShortTag = dbShortTag || team.short_tag || team.teamTag || team.tag || "";
+  const finalTeamLogo = dbTeamLogo || team.team_logo || team.teamLogo || team.logo || "";
+  const finalCountryLogo = dbCountryLogo || team.country_logo || team.countryLogo || team.flag || "";
 
   return {
     ...team,
-    team_name: meta?.team_name || meta?.teamName || team.team_name || "",
-    short_tag: dbShortTag || team.short_tag || team.teamTag || "",
-    team_logo: dbTeamLogo || team.team_logo || team.teamLogo || "",
-    country_logo: dbCountryLogo || team.country_logo || team.countryLogo || "",
-    teamTag: dbShortTag || team.teamTag || team.short_tag || "",
-    teamLogo: dbTeamLogo || team.teamLogo || team.team_logo || "",
-    countryLogo: dbCountryLogo || team.countryLogo || team.country_logo || "",
+    team_id: teamIdKey || team.team_id || "",
+    team_name: finalTeamName,
+    short_tag: finalShortTag,
+    team_logo: finalTeamLogo,
+    country_logo: finalCountryLogo,
+    
+    // Retain legacy payload keys for overlay/UI software compatibility
+    teamTag: finalShortTag,
+    teamLogo: finalTeamLogo,
+    countryLogo: finalCountryLogo,
+    
     ranking_score:
       meta?.ranking_score || meta?.rankingScore || team.ranking_score || 0,
   };
@@ -113,7 +129,6 @@ const startCentralEngine = (matchId) => {
     };
   }
 
-  // If the background update loop is already active, do nothing
   if (matchCache[matchId].intervalId) return;
 
   console.log(
@@ -123,7 +138,6 @@ const startCentralEngine = (matchId) => {
   const tick = async () => {
     const entry = matchCache[matchId];
 
-    // Auto-cleanup worker loop if no connections are listening for over 30 seconds
     if (entry.clients.size === 0 && Date.now() - entry.lastActive > 30000) {
       console.log(
         `💤 [ENGINE SLEEP] Suspending central worker loop for inactive Match ID: ${matchId}`,
@@ -143,7 +157,6 @@ const startCentralEngine = (matchId) => {
       });
       entry.latestFrame = frameWSFrame(jsonString);
 
-      // Broadcast to all active clients connected to this match instantly from memory
       for (const socket of entry.clients) {
         if (socket.writable) {
           socket.write(entry.latestFrame);
@@ -157,14 +170,11 @@ const startCentralEngine = (matchId) => {
     }
   };
 
-  // 100ms triggers external API rate-blocking. 1000ms - 1500ms provides clean real-time metrics.
   const intervalDuration = Math.max(
     1000,
     parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1500,
   );
   matchCache[matchId].intervalId = setInterval(tick, intervalDuration);
-
-  // Fire once immediately to prime the cache
   tick();
 };
 
@@ -194,6 +204,7 @@ const frameWSFrame = (payload) => {
 
 const parseWS = (url = "") => {
   if (!url) return null;
+  // Match both standard types and route alternatives safely
   const match = url.match(/\/(?:ws\/)?(realtime|tablestandings)\/([^/?#]+)/);
   if (!match) return null;
   return { type: match[1], matchId: match[2].trim() };
@@ -227,7 +238,6 @@ const handleWS = (req, socket) => {
   entry.clients.add(socket);
   entry.lastActive = Date.now();
 
-  // Instantly send the cached state from RAM memory so client UI populates with 0ms delay!
   if (entry.latestFrame && socket.writable) {
     socket.write(entry.latestFrame);
   }
@@ -246,14 +256,12 @@ const handleWS = (req, socket) => {
 };
 
 /* ================= HIGH SPEED BROWSER HTTP ENDPOINTS ================= */
-
 router.get(
-  ["/ws/realtime/:matchId", "/realtime/:matchId"],
+  ["/ws/realtime/:matchId", "/realtime/:matchId", "/tablestandings/:matchId"],
   async (req, res) => {
     try {
       const matchId = req.params.matchId;
 
-      // ⚡ SERVE FROM SERVER RAM INSTANTLY WITH ZERO DELAY IF VALID CACHE EXISTS!
       if (matchCache[matchId]) {
         matchCache[matchId].lastActive = Date.now();
         if (matchCache[matchId].rawJsonData) {
@@ -265,13 +273,9 @@ router.get(
         }
       }
 
-      // Cache miss (First time system has ever requested this specific match token)
-      console.log(
-        `🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`,
-      );
+      console.log(`🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`);
       startCentralEngine(matchId);
 
-      // Pull synchronously just this once to prevent empty response
       const standingsData = await buildStandings(matchId);
       return res.json({
         success: true,

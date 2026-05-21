@@ -59,6 +59,7 @@ const PORT = process.env.PORT || 3000;
 const SHEET_URL = process.env.SHEET_URL;
 
 /* ================= CSV PARSER ================= */
+/* ================= CSV PARSER ================= */
 const parseCSVToArray = (csvText) => {
   const lines = csvText.split("\n");
   if (!lines.length) return [];
@@ -82,12 +83,15 @@ const parseCSVToArray = (csvText) => {
     const currentId = obj.team_id || obj.id;
 
     if (currentId) {
+      // Clean and normalize the text values safely
+      const cleanId = String(currentId).trim();
+
       records.push({
-        team_id: String(currentId),
-        team_name: obj.team_name || obj.name || "",
-        short_tag: obj.team_tag || obj.short_tag || obj.tag || "",
-        team_logo: obj.team_logo || "",
-        country_logo: obj.country_logo || "",
+        team_id: cleanId,
+        team_name: (obj.team_name || obj.name || "").trim(),
+        short_tag: (obj.short_tag || obj.team_tag || obj.tag || "").trim(),
+        team_logo: (obj.team_logo || "").trim(),
+        country_logo: (obj.country_logo || "").trim(),
       });
     }
   }
