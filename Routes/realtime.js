@@ -25,7 +25,9 @@ const checkLocalIpAvailability = (targetIp) => {
 };
 
 const isIpValidOnMachine = checkLocalIpAvailability(TARGET_IP);
-const staticIpAgent = isIpValidOnMachine ? new https.Agent({ localAddress: TARGET_IP }) : null;
+const staticIpAgent = isIpValidOnMachine
+  ? new https.Agent({ localAddress: TARGET_IP })
+  : null;
 
 const getHeaders = () => ({
   "Client-ID": CLIENT_ID,
@@ -34,13 +36,13 @@ const getHeaders = () => ({
 const fetchMatch = async (id) => {
   const config = {
     headers: getHeaders(),
-    timeout: 5000 // Reduced from 60s to 5s to prevent hanging threads from breaking the server
+    timeout: 5000, // Reduced from 60s to 5s to prevent hanging threads from breaking the server
   };
 
   if (staticIpAgent) {
     config.httpsAgent = staticIpAgent;
   }
-  
+
   const res = await axios.get(`${API_URL}/${id}`, config);
   return res.data;
 };
@@ -48,23 +50,44 @@ const fetchMatch = async (id) => {
 const getTeams = (data) => data?.match?.team_stats || data?.team_stats || [];
 
 const mergeTeam = (team) => {
-  const teamIdKey = team.team_id || team.id;
-  const meta = (store && store.teamMap) ? store.teamMap[String(teamIdKey)] : null;
+  if (!team) return {};
+
+  // 1. Safeguard checking for variations of ID matching
+  const teamIdKey = team.team_id || team.id || team.teamId;
+  const meta = store && store.teamMap ? store.teamMap[String(teamIdKey)] : null;
   const base = process.env.BASE_URL || "";
-  
+
   const formatImgUri = (fieldValue) => {
     if (!fieldValue) return "";
-    if (fieldValue.startsWith("http://") || fieldValue.startsWith("https://")) return fieldValue;
-    return `${base}/uploads/${fieldValue}`;
+
+    // Clean up corrupted database prefixes if they contain broken port references like "52:3000/uploads/"
+    let cleanValue = fieldValue;
+    if (cleanValue.includes("52:3000/uploads/")) {
+      cleanValue = cleanValue.replace("52:3000/uploads/", "");
+    }
+
+    if (cleanValue.startsWith("http://") || cleanValue.startsWith("https://")) {
+      return cleanValue;
+    }
+    return `${base}/uploads/${cleanValue}`;
   };
+
+  // Extract metadata variables safely
+  const dbShortTag = meta?.short_tag || meta?.shortTag || "";
+  const dbTeamLogo = formatImgUri(meta?.team_logo || meta?.teamLogo);
+  const dbCountryLogo = formatImgUri(meta?.country_logo || meta?.countryLogo);
 
   return {
     ...team,
-    team_name: meta?.team_name || team.team_name,
-    teamTag: meta?.short_tag || team.teamTag || "",
-    teamLogo: formatImgUri(meta?.team_logo) || team.teamLogo || "",
-    countryLogo: formatImgUri(meta?.country_logo) || team.countryLogo || "",
-    ranking_score: meta?.ranking_score || team.ranking_score || 0,
+    team_name: meta?.team_name || meta?.teamName || team.team_name || "",
+    short_tag: dbShortTag || team.short_tag || team.teamTag || "",
+    team_logo: dbTeamLogo || team.team_logo || team.teamLogo || "",
+    country_logo: dbCountryLogo || team.country_logo || team.countryLogo || "",
+    teamTag: dbShortTag || team.teamTag || team.short_tag || "",
+    teamLogo: dbTeamLogo || team.teamLogo || team.team_logo || "",
+    countryLogo: dbCountryLogo || team.countryLogo || team.country_logo || "",
+    ranking_score:
+      meta?.ranking_score || meta?.rankingScore || team.ranking_score || 0,
   };
 };
 
@@ -86,21 +109,25 @@ const startCentralEngine = (matchId) => {
       rawJsonData: null,
       latestFrame: null,
       intervalId: null,
-      lastActive: Date.now()
+      lastActive: Date.now(),
     };
   }
 
   // If the background update loop is already active, do nothing
   if (matchCache[matchId].intervalId) return;
 
-  console.log(`🌀 [ENGINE START] Initializing centralized data worker loop for Match ID: ${matchId}`);
+  console.log(
+    `🌀 [ENGINE START] Initializing centralized data worker loop for Match ID: ${matchId}`,
+  );
 
   const tick = async () => {
     const entry = matchCache[matchId];
-    
+
     // Auto-cleanup worker loop if no connections are listening for over 30 seconds
     if (entry.clients.size === 0 && Date.now() - entry.lastActive > 30000) {
-      console.log(`💤 [ENGINE SLEEP] Suspending central worker loop for inactive Match ID: ${matchId}`);
+      console.log(
+        `💤 [ENGINE SLEEP] Suspending central worker loop for inactive Match ID: ${matchId}`,
+      );
       clearInterval(entry.intervalId);
       entry.intervalId = null;
       return;
@@ -109,10 +136,10 @@ const startCentralEngine = (matchId) => {
     try {
       const standings = await buildStandings(matchId);
       entry.rawJsonData = standings;
-      
+
       const jsonString = JSON.stringify({
         type: "tablestandings",
-        data: standings
+        data: standings,
       });
       entry.latestFrame = frameWSFrame(jsonString);
 
@@ -123,14 +150,20 @@ const startCentralEngine = (matchId) => {
         }
       }
     } catch (err) {
-      console.error(`❌ Central Worker Loop Error [Match ID: ${matchId}]:`, err.message);
+      console.error(
+        `❌ Central Worker Loop Error [Match ID: ${matchId}]:`,
+        err.message,
+      );
     }
   };
 
   // 100ms triggers external API rate-blocking. 1000ms - 1500ms provides clean real-time metrics.
-  const intervalDuration = Math.max(1000, parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1500);
+  const intervalDuration = Math.max(
+    1000,
+    parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1500,
+  );
   matchCache[matchId].intervalId = setInterval(tick, intervalDuration);
-  
+
   // Fire once immediately to prime the cache
   tick();
 };
@@ -153,8 +186,8 @@ const frameWSFrame = (payload) => {
     frame[1] = 127;
     frame.writeBigUInt64BE(BigInt(len), 2);
   }
-  
-  frame[0] = 0x81; 
+
+  frame[0] = 0x81;
   dataBuffer.copy(frame, frame.length - len);
   return frame;
 };
@@ -171,7 +204,7 @@ const handleWS = (req, socket) => {
   if (!route || !route.matchId || route.matchId === "undefined") return false;
 
   const key = req.headers["sec-websocket-key"];
-  if (!key) return false; 
+  if (!key) return false;
 
   const accept = crypto
     .createHash("sha1")
@@ -189,7 +222,7 @@ const handleWS = (req, socket) => {
   console.log(`🚀 Client joined WebSocket pool for Match ID: ${matchId}`);
 
   startCentralEngine(matchId);
-  
+
   const entry = matchCache[matchId];
   entry.clients.add(socket);
   entry.lastActive = Date.now();
@@ -214,39 +247,43 @@ const handleWS = (req, socket) => {
 
 /* ================= HIGH SPEED BROWSER HTTP ENDPOINTS ================= */
 
-router.get(["/ws/realtime/:matchId", "/realtime/:matchId"], async (req, res) => {
-  try {
-    const matchId = req.params.matchId;
-    
-    // ⚡ SERVE FROM SERVER RAM INSTANTLY WITH ZERO DELAY IF VALID CACHE EXISTS!
-    if (matchCache[matchId]) {
-      matchCache[matchId].lastActive = Date.now();
-      if (matchCache[matchId].rawJsonData) {
-        return res.json({
-          success: true,
-          type: "tablestandings_cached",
-          data: matchCache[matchId].rawJsonData
-        });
+router.get(
+  ["/ws/realtime/:matchId", "/realtime/:matchId"],
+  async (req, res) => {
+    try {
+      const matchId = req.params.matchId;
+
+      // ⚡ SERVE FROM SERVER RAM INSTANTLY WITH ZERO DELAY IF VALID CACHE EXISTS!
+      if (matchCache[matchId]) {
+        matchCache[matchId].lastActive = Date.now();
+        if (matchCache[matchId].rawJsonData) {
+          return res.json({
+            success: true,
+            type: "tablestandings_cached",
+            data: matchCache[matchId].rawJsonData,
+          });
+        }
       }
+
+      // Cache miss (First time system has ever requested this specific match token)
+      console.log(
+        `🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`,
+      );
+      startCentralEngine(matchId);
+
+      // Pull synchronously just this once to prevent empty response
+      const standingsData = await buildStandings(matchId);
+      return res.json({
+        success: true,
+        type: "tablestandings_static",
+        data: standingsData,
+      });
+    } catch (err) {
+      console.error("❌ Browser HTTP GET Endpoint Error:", err.message);
+      return res.status(500).json({ success: false, error: err.message });
     }
-
-    // Cache miss (First time system has ever requested this specific match token)
-    console.log(`🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`);
-    startCentralEngine(matchId);
-    
-    // Pull synchronously just this once to prevent empty response
-    const standingsData = await buildStandings(matchId);
-    return res.json({
-      success: true,
-      type: "tablestandings_static",
-      data: standingsData
-    });
-
-  } catch (err) {
-    console.error("❌ Browser HTTP GET Endpoint Error:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
+  },
+);
 
 router.handleRealtimeWebSocket = handleWS;
 module.exports = router;
