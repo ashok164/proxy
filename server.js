@@ -226,9 +226,11 @@ setInterval(syncSheetToPostgres, 30000);
 const logoRoutes = require("./Routes/logos");
 const realtimeRoutes = require("./Routes/realtime");
 const teamRoutes = require("./Routes/teamRecord");
+const teamPlayerRoutes = require("./Routes/teamPlayers");
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
+app.use("/api", teamPlayerRoutes);
 app.use("/api/teams", teamRoutes);
 
 /* ================= VERSION ================= */

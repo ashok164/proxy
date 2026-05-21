@@ -17,6 +17,17 @@ const initDB = async () => {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS team_players (
+        id SERIAL PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        player_name TEXT,
+        player_pic TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
       ALTER TABLE teams
       ADD COLUMN IF NOT EXISTS rank TEXT;
     `);
@@ -29,6 +40,10 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_team_rank ON teams(rank);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_team_players_team_id ON team_players(team_id);
     `);
 
   } catch (err) {

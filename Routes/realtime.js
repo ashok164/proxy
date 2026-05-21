@@ -126,7 +126,50 @@ const buildTeamMetaIndex = async () => {
   return index;
 };
 
-const mergeTeam = (team, metaIndex = {}, logoCache = {}) => {
+const formatUploadUri = (value) => {
+  if (!value) return "";
+
+  const base = process.env.BASE_URL || "http://82.29.155.252:3000";
+  let clean = String(value).trim();
+
+  if (clean.startsWith("http://") || clean.startsWith("https://")) {
+    return clean;
+  }
+
+  clean = clean.replace(/^\/+/, "");
+  clean = clean.replace(/^uploads\//i, "");
+
+  return `${base}/uploads/${clean}`;
+};
+
+const buildPlayerIndex = async () => {
+  const index = {};
+
+  try {
+    const result = await pool.query(
+      "SELECT id, team_id, player_name, player_pic FROM team_players ORDER BY id DESC",
+    );
+
+    for (const player of result.rows) {
+      const teamIdKey = normalizeTeamIdKey(player.team_id);
+      if (!teamIdKey) continue;
+
+      if (!index[teamIdKey]) index[teamIdKey] = [];
+      index[teamIdKey].push({
+        ...player,
+        team_id: teamIdKey,
+        player_pic: formatUploadUri(player.player_pic),
+        playerPic: formatUploadUri(player.player_pic),
+      });
+    }
+  } catch (err) {
+    console.error("DB player metadata lookup failed:", err.message);
+  }
+
+  return index;
+};
+
+const mergeTeam = (team, metaIndex = {}, logoCache = {}, playerIndex = {}) => {
   if (!team) return {};
 
   /* ================= NORMALIZE TEAM ID ================= */
@@ -137,24 +180,9 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}) => {
   /* ================= GET SHEET DATA ================= */
   const meta = teamIdKey ? metaIndex[teamIdKey] || {} : {};
 
-  /* ================= BASE URL ================= */
-  const base = process.env.BASE_URL || "http://82.29.155.252:3000";
-
   /* ================= IMAGE FORMATTER ================= */
   const formatImgUri = (value) => {
-    if (!value) return "";
-
-    let clean = String(value).trim();
-
-    // already full url
-    if (clean.startsWith("http://") || clean.startsWith("https://")) {
-      return clean;
-    }
-
-    clean = clean.replace(/^\/+/, "");
-    clean = clean.replace(/^uploads\//i, "");
-
-    return `${base}/uploads/${clean}`;
+    return formatUploadUri(value);
   };
 
   /* ================= SHEET VALUES ================= */
@@ -192,6 +220,8 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}) => {
     };
   }
 
+  const playerPics = teamIdKey ? playerIndex[teamIdKey] || [] : [];
+
   /* ================= RETURN FINAL OBJECT ================= */
   return {
     ...team,
@@ -208,6 +238,8 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}) => {
     teamTag: finalShortTag,
     countryLogo: finalCountryLogo,
     teamLogo: finalTeamLogo,
+    player_pics: playerPics,
+    playerPics,
     metaMatched: Boolean(teamIdKey && meta.team_id),
   };
 };
@@ -215,7 +247,10 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}) => {
 const buildStandings = async (id, logoCache = {}) => {
   const data = await fetchMatch(id);
   const metaIndex = await buildTeamMetaIndex();
-  const teams = getTeams(data).map((team) => mergeTeam(team, metaIndex, logoCache));
+  const playerIndex = await buildPlayerIndex();
+  const teams = getTeams(data).map((team) =>
+    mergeTeam(team, metaIndex, logoCache, playerIndex),
+  );
 
   return {
     matchId: id,
