@@ -36,7 +36,7 @@ const getHeaders = () => ({
 const fetchMatch = async (id) => {
   const config = {
     headers: getHeaders(),
-    timeout: 5000, 
+    timeout: 5000,
   };
 
   if (staticIpAgent) {
@@ -47,63 +47,82 @@ const fetchMatch = async (id) => {
   return res.data;
 };
 
-const getTeams = (data) => data?.match?.team_stats || data?.team_stats || data?.teams || [];
+const getTeams = (data) =>
+  data?.match?.team_stats || data?.team_stats || data?.teams || [];
 
 const mergeTeam = (team) => {
   if (!team) return {};
 
-  // 1. Force extraction of ID and normalize to a clean, trimmed String string
-  const rawId = team.team_id || team.id || team.teamId || team.team_uid || team.teamCode;
-  const teamIdKey = rawId ? String(rawId).trim() : null;
-  
-  const meta = store && store.teamMap && teamIdKey ? store.teamMap[teamIdKey] : null;
+  /* ================= NORMALIZE TEAM ID ================= */
+  const rawId =
+    team.team_id || team.id || team.teamId || team.team_uid || team.teamCode;
+
+  const teamIdKey = rawId ? String(rawId).trim() : "";
+
+  /* ================= GET SHEET DATA ================= */
+  const meta =
+    store && store.teamMap && store.teamMap[teamIdKey]
+      ? store.teamMap[teamIdKey]
+      : {};
+
+  /* ================= BASE URL ================= */
   const base = process.env.BASE_URL || "http://82.29.155.252:3000";
 
-  const formatImgUri = (fieldValue) => {
-    if (!fieldValue) return "";
+  /* ================= IMAGE FORMATTER ================= */
+  const formatImgUri = (value) => {
+    if (!value) return "";
 
-    let cleanValue = String(fieldValue).trim();
+    let clean = String(value).trim();
 
-    // 🔥 CRITICAL FIX: Repair corrupted spreadsheet values missing the protocol and IP snippet
-    if (cleanValue.startsWith("52:3000/uploads/")) {
-      cleanValue = cleanValue.replace("52:3000/uploads/", "");
+    // already full url
+    if (clean.startsWith("http://") || clean.startsWith("https://")) {
+      return clean;
     }
 
-    if (cleanValue.startsWith("http://") || cleanValue.startsWith("https://")) {
-      return cleanValue;
-    }
-    
-    // Ensure no double slashes creep into generation pathing
-    return `${base.replace(/\/$/, "")}/uploads/${cleanValue.replace(/^\//, "")}`;
+    clean = clean.replace(/^\/+/, "");
+
+    return `${base}/uploads/${clean}`;
   };
 
-  // Safe Extraction of Sheet Metadata Assets
-  const dbTeamName = meta?.team_name || meta?.teamName || "";
-  const dbShortTag = meta?.short_tag || meta?.shortTag || "";
-  const dbTeamLogo = meta?.team_logo || meta?.teamLogo ? formatImgUri(meta.team_logo || meta.teamLogo) : "";
-  const dbCountryLogo = meta?.country_logo || meta?.countryLogo ? formatImgUri(meta.country_logo || meta.countryLogo) : "";
+  /* ================= SHEET VALUES ================= */
+  const sheetTeamName = meta.team_name || meta.name || "";
 
-  // Dynamic Fallback Logic Cascade
-  const finalTeamName = dbTeamName || team.team_name || team.name || "";
-  const finalShortTag = dbShortTag || team.short_tag || team.teamTag || team.tag || "";
-  const finalTeamLogo = dbTeamLogo || team.team_logo || team.teamLogo || team.logo || "";
-  const finalCountryLogo = dbCountryLogo || team.country_logo || team.countryLogo || team.flag || "";
+  const sheetShortTag = meta.short_tag || meta.team_tag || meta.tag || "";
 
+  const sheetCountryLogo = meta.country_logo || "";
+
+  const sheetTeamLogo = meta.team_logo || "";
+
+  /* ================= FINAL MERGED VALUES ================= */
+  const finalTeamName = sheetTeamName || team.team_name || team.name || "";
+
+  const finalShortTag =
+    sheetShortTag || team.short_tag || team.teamTag || team.tag || "";
+
+  const finalCountryLogo = sheetCountryLogo
+    ? formatImgUri(sheetCountryLogo)
+    : team.country_logo || team.countryLogo || team.flag || "";
+
+  const finalTeamLogo = sheetTeamLogo
+    ? formatImgUri(sheetTeamLogo)
+    : team.team_logo || team.teamLogo || team.logo || "";
+
+  /* ================= RETURN FINAL OBJECT ================= */
   return {
     ...team,
-    team_id: teamIdKey || team.team_id || "",
+
+    team_id: teamIdKey,
+
     team_name: finalTeamName,
     short_tag: finalShortTag,
-    team_logo: finalTeamLogo,
+
     country_logo: finalCountryLogo,
-    
-    // Retain legacy payload keys for overlay/UI software compatibility
+    team_logo: finalTeamLogo,
+
+    // compatibility keys
     teamTag: finalShortTag,
-    teamLogo: finalTeamLogo,
     countryLogo: finalCountryLogo,
-    
-    ranking_score:
-      meta?.ranking_score || meta?.rankingScore || team.ranking_score || 0,
+    teamLogo: finalTeamLogo,
   };
 };
 
@@ -273,7 +292,9 @@ router.get(
         }
       }
 
-      console.log(`🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`);
+      console.log(
+        `🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`,
+      );
       startCentralEngine(matchId);
 
       const standingsData = await buildStandings(matchId);
