@@ -119,39 +119,29 @@ const syncSheetToPostgres = async () => {
 
     const teams = parseCSVToArray(res.data);
 
-    // ✅ Step 1: Populate in-memory store FIRST — DB state must never block this
     if (!store.teamMap) store.teamMap = {};
     else Object.keys(store.teamMap).forEach((k) => delete store.teamMap[k]);
 
     for (const t of teams) {
       store.teamMap[String(t.team_id)] = t;
-    }
-    console.log(`✅ In-memory store updated: ${teams.length} teams`);
 
-    // 💾 Step 2: Try to persist to DB separately — failure is non-fatal
-    let dbOk = true;
-    for (const t of teams) {
-      try {
-        await pool.query(
-          `INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo, updated_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())
-           ON CONFLICT (team_id)
-           DO UPDATE SET
-             team_name = EXCLUDED.team_name,
-             short_tag = EXCLUDED.short_tag,
-             team_logo = EXCLUDED.team_logo,
-             country_logo = EXCLUDED.country_logo,
-             updated_at = NOW()`,
-          [t.team_id, t.team_name, t.short_tag, t.team_logo, t.country_logo],
-        );
-      } catch (dbErr) {
-        if (dbOk) console.warn(`⚠️ DB unavailable, running from sheet memory only: ${dbErr.message}`);
-        dbOk = false;
-        break;
-      }
+      await pool.query(
+        `INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (team_id)
+         DO UPDATE SET
+           team_name = EXCLUDED.team_name,
+           short_tag = EXCLUDED.short_tag,
+           team_logo = EXCLUDED.team_logo,
+           country_logo = EXCLUDED.country_logo,
+           updated_at = NOW()`,
+        [t.team_id, t.team_name, t.short_tag, t.team_logo, t.country_logo],
+      );
     }
 
-    console.log(`🔄 Sheet synced: ${teams.length} teams processed.`);
+    console.log(
+      `🔄 Sheet synced successfully: ${teams.length} teams processed.`,
+    );
   } catch (err) {
     console.error("❌ Sync error:", err.message);
   } finally {
@@ -186,13 +176,6 @@ app.get("/version", (req, res) => {
 /* ================= SERVER ================= */
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on ${PORT}`);
-});
-
-server.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`❌ Port ${PORT} is already in use. Run: npx kill-port ${PORT}`);
-    process.exit(1);
-  }
 });
 
 /* ================= WEBSOCKET ================= */
