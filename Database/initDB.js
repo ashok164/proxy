@@ -5,6 +5,7 @@ const initDB = async () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS teams (
         id SERIAL PRIMARY KEY,
+        rank TEXT,
         team_id TEXT UNIQUE NOT NULL,
         team_name TEXT,
         short_tag TEXT,
@@ -15,10 +16,19 @@ const initDB = async () => {
       );
     `);
 
+    await pool.query(`
+      ALTER TABLE teams
+      ADD COLUMN IF NOT EXISTS rank TEXT;
+    `);
+
 
     // optional but recommended for esports realtime performance
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_team_id ON teams(team_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_team_rank ON teams(rank);
     `);
 
   } catch (err) {

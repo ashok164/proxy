@@ -6,6 +6,7 @@ const os = require("os");
 const router = express.Router();
 
 const store = require("../Data/store");
+const pool = require("../Database/db");
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -51,27 +52,99 @@ const getTeams = (data) =>
   data?.match?.team_stats || data?.team_stats || data?.teams || [];
 
 const normalizeLookupKey = (value) => String(value || "").trim().toLowerCase();
+const firstValue = (...values) =>
+  values.find((value) => value !== undefined && value !== null && value !== "");
 
-const mergeTeam = (team) => {
+const getTeamId = (team = {}) =>
+  firstValue(
+    team.team_id,
+    team.id,
+    team.teamId,
+    team.team_uid,
+    team.teamUid,
+    team.teamCode,
+  );
+
+const getTeamRank = (team = {}) =>
+  firstValue(
+    team.rank,
+    team.slot,
+    team.position,
+    team.team_rank,
+    team.teamRank,
+    team.team_id,
+  );
+
+const getTeamName = (team = {}) =>
+  firstValue(
+    team.team_name,
+    team.teamName,
+    team.name,
+    team.team,
+    team.title,
+  );
+
+const getTeamTag = (team = {}) =>
+  firstValue(
+    team.short_tag,
+    team.team_tag,
+    team.teamTag,
+    team.shortTag,
+    team.tag,
+    team.shortName,
+  );
+
+const addMetaToIndex = (index, meta) => {
+  if (!meta) return;
+
+  const keys = [getTeamId(meta), getTeamRank(meta), getTeamName(meta), getTeamTag(meta)];
+
+  for (const key of keys) {
+    const normalized = normalizeLookupKey(key);
+    if (normalized) index[normalized] = meta;
+  }
+};
+
+const buildTeamMetaIndex = async () => {
+  const index = {};
+
+  if (store?.teamMap) {
+    for (const meta of Object.values(store.teamMap)) {
+      addMetaToIndex(index, meta);
+    }
+  }
+
+  try {
+    const result = await pool.query(
+      "SELECT rank, team_id, team_name, short_tag, team_logo, country_logo FROM teams",
+    );
+
+    for (const meta of result.rows) {
+      addMetaToIndex(index, meta);
+    }
+  } catch (err) {
+    console.error("DB team metadata lookup failed:", err.message);
+  }
+
+  return index;
+};
+
+const mergeTeam = (team, metaIndex = {}) => {
   if (!team) return {};
 
   /* ================= NORMALIZE TEAM ID ================= */
-  const rawId =
-    team.team_id || team.id || team.teamId || team.team_uid || team.teamCode;
+  const rawId = getTeamId(team);
 
   const teamIdKey = rawId ? String(rawId).trim() : "";
 
   /* ================= GET SHEET DATA ================= */
-  const teamNameKey = normalizeLookupKey(team.team_name || team.name);
-  const shortTagKey = normalizeLookupKey(
-    team.short_tag || team.teamTag || team.tag,
-  );
+  const teamNameKey = normalizeLookupKey(getTeamName(team));
+  const shortTagKey = normalizeLookupKey(getTeamTag(team));
   const meta =
-    (store &&
-      store.teamMap &&
-      (store.teamMap[teamIdKey] ||
-        store.teamMap[teamNameKey] ||
-        store.teamMap[shortTagKey])) ||
+    metaIndex[normalizeLookupKey(teamIdKey)] ||
+    metaIndex[normalizeLookupKey(getTeamRank(team))] ||
+    metaIndex[teamNameKey] ||
+    metaIndex[shortTagKey] ||
     {};
 
   /* ================= BASE URL ================= */
@@ -97,17 +170,17 @@ const mergeTeam = (team) => {
   /* ================= SHEET VALUES ================= */
   const sheetTeamName = meta.team_name || meta.name || "";
 
-  const sheetShortTag = meta.short_tag || meta.team_tag || meta.tag || "ashok";
+  const sheetShortTag = getTeamTag(meta);
 
-  const sheetCountryLogo = meta.country_logo || "ashok.png";
+  const sheetCountryLogo = meta.country_logo;
 
-  const sheetTeamLogo = meta.team_logo || "sumnima.png";
+  const sheetTeamLogo = meta.team_logo;
 
   /* ================= FINAL MERGED VALUES ================= */
-  const finalTeamName = sheetTeamName || team.team_name || team.name || "";
+  const finalTeamName = sheetTeamName || getTeamName(team) || "";
 
   const finalShortTag =
-    sheetShortTag || team.short_tag || team.teamTag || team.tag || "";
+    sheetShortTag || getTeamTag(team) || "";
 
   const finalCountryLogo = sheetCountryLogo
     ? formatImgUri(sheetCountryLogo)
@@ -133,12 +206,14 @@ const mergeTeam = (team) => {
     teamTag: finalShortTag,
     countryLogo: finalCountryLogo,
     teamLogo: finalTeamLogo,
+    metaMatched: Boolean(meta.team_id || meta.team_name || meta.short_tag),
   };
 };
 
 const buildStandings = async (id) => {
   const data = await fetchMatch(id);
-  const teams = getTeams(data).map(mergeTeam);
+  const metaIndex = await buildTeamMetaIndex();
+  const teams = getTeams(data).map((team) => mergeTeam(team, metaIndex));
 
   return {
     matchId: id,

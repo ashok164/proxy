@@ -76,7 +76,6 @@ const normalizeSheetUrl = (url = "") => {
 };
 
 /* ================= CSV PARSER ================= */
-/* ================= CSV PARSER ================= */
 const parseCSVToArray = (csvText) => {
   const parseCSVLine = (line) => {
     const values = [];
@@ -131,6 +130,7 @@ const parseCSVToArray = (csvText) => {
       const cleanId = String(currentId).trim();
 
       records.push({
+        rank: (obj.rank || obj.slot || obj.position || "").trim(),
         team_id: cleanId,
         team_name: (obj.team_name || obj.name || "").trim(),
         short_tag: (obj.short_tag || obj.team_tag || obj.tag || "").trim(),
@@ -177,6 +177,9 @@ const syncSheetToPostgres = async () => {
 
     for (const t of teams) {
       store.teamMap[String(t.team_id)] = t;
+      if (t.rank) {
+        store.teamMap[String(t.rank).trim().toLowerCase()] = t;
+      }
       if (t.team_name) {
         store.teamMap[String(t.team_name).trim().toLowerCase()] = t;
       }
@@ -185,16 +188,24 @@ const syncSheetToPostgres = async () => {
       }
 
       await pool.query(
-        `INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
+        `INSERT INTO teams (rank, team_id, team_name, short_tag, team_logo, country_logo, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
          ON CONFLICT (team_id)
          DO UPDATE SET
+           rank = EXCLUDED.rank,
            team_name = EXCLUDED.team_name,
            short_tag = EXCLUDED.short_tag,
            team_logo = EXCLUDED.team_logo,
            country_logo = EXCLUDED.country_logo,
            updated_at = NOW()`,
-        [t.team_id, t.team_name, t.short_tag, t.team_logo, t.country_logo],
+        [
+          t.rank,
+          t.team_id,
+          t.team_name,
+          t.short_tag,
+          t.team_logo,
+          t.country_logo,
+        ],
       );
     }
 
