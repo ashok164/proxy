@@ -87,11 +87,11 @@ const mergeTeam = (team) => {
   /* ================= SHEET VALUES ================= */
   const sheetTeamName = meta.team_name || meta.name || "";
 
-  const sheetShortTag = meta.short_tag || meta.team_tag || meta.tag || "";
+  const sheetShortTag = meta.short_tag || meta.team_tag || meta.tag || "ashok";
 
-  const sheetCountryLogo = meta.country_logo || "";
+  const sheetCountryLogo = meta.country_logo || "ashok.png";
 
-  const sheetTeamLogo = meta.team_logo || "";
+  const sheetTeamLogo = meta.team_logo || "sumnima.png";
 
   /* ================= FINAL MERGED VALUES ================= */
   const finalTeamName = sheetTeamName || team.team_name || team.name || "";
