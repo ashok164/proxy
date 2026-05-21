@@ -77,6 +77,14 @@ const normalizeSheetUrl = (url = "") => {
 
 /* ================= CSV PARSER ================= */
 const parseCSVToArray = (csvText) => {
+  const normalizeTeamId = (value) => {
+    const clean = String(value || "").trim();
+    if (!/^\d+$/.test(clean)) return clean;
+
+    const numericId = Number(clean);
+    return Number.isSafeInteger(numericId) ? String(numericId) : clean;
+  };
+
   const parseCSVLine = (line) => {
     const values = [];
     let current = "";
@@ -127,7 +135,7 @@ const parseCSVToArray = (csvText) => {
 
     if (currentId) {
       // Clean and normalize the text values safely
-      const cleanId = String(currentId).trim();
+      const cleanId = normalizeTeamId(currentId);
 
       records.push({
         rank: (obj.rank || obj.slot || obj.position || "").trim(),
@@ -177,15 +185,6 @@ const syncSheetToPostgres = async () => {
 
     for (const t of teams) {
       store.teamMap[String(t.team_id)] = t;
-      if (t.rank) {
-        store.teamMap[String(t.rank).trim().toLowerCase()] = t;
-      }
-      if (t.team_name) {
-        store.teamMap[String(t.team_name).trim().toLowerCase()] = t;
-      }
-      if (t.short_tag) {
-        store.teamMap[String(t.short_tag).trim().toLowerCase()] = t;
-      }
 
       await pool.query(
         `INSERT INTO teams (rank, team_id, team_name, short_tag, team_logo, country_logo, updated_at)

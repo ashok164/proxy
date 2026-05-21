@@ -51,9 +51,20 @@ const fetchMatch = async (id) => {
 const getTeams = (data) =>
   data?.match?.team_stats || data?.team_stats || data?.teams || [];
 
-const normalizeLookupKey = (value) => String(value || "").trim().toLowerCase();
 const firstValue = (...values) =>
   values.find((value) => value !== undefined && value !== null && value !== "");
+const normalizeTeamIdNumber = (value) => {
+  const clean = String(value ?? "").trim();
+  if (!/^\d+$/.test(clean)) return null;
+
+  const numberValue = Number(clean);
+  return Number.isSafeInteger(numberValue) ? numberValue : null;
+};
+
+const normalizeTeamIdKey = (value) => {
+  const numberValue = normalizeTeamIdNumber(value);
+  return numberValue === null ? "" : String(numberValue);
+};
 
 const getTeamId = (team = {}) =>
   firstValue(
@@ -63,16 +74,6 @@ const getTeamId = (team = {}) =>
     team.team_uid,
     team.teamUid,
     team.teamCode,
-  );
-
-const getTeamRank = (team = {}) =>
-  firstValue(
-    team.rank,
-    team.slot,
-    team.position,
-    team.team_rank,
-    team.teamRank,
-    team.team_id,
   );
 
 const getTeamName = (team = {}) =>
@@ -97,12 +98,8 @@ const getTeamTag = (team = {}) =>
 const addMetaToIndex = (index, meta) => {
   if (!meta) return;
 
-  const keys = [getTeamId(meta), getTeamRank(meta), getTeamName(meta), getTeamTag(meta)];
-
-  for (const key of keys) {
-    const normalized = normalizeLookupKey(key);
-    if (normalized) index[normalized] = meta;
-  }
+  const teamIdKey = normalizeTeamIdKey(getTeamId(meta));
+  if (teamIdKey) index[teamIdKey] = meta;
 };
 
 const buildTeamMetaIndex = async () => {
@@ -116,7 +113,7 @@ const buildTeamMetaIndex = async () => {
 
   try {
     const result = await pool.query(
-      "SELECT rank, team_id, team_name, short_tag, team_logo, country_logo FROM teams",
+      "SELECT team_id, team_name, short_tag, team_logo, country_logo FROM teams",
     );
 
     for (const meta of result.rows) {
@@ -129,23 +126,16 @@ const buildTeamMetaIndex = async () => {
   return index;
 };
 
-const mergeTeam = (team, metaIndex = {}) => {
+const mergeTeam = (team, metaIndex = {}, logoCache = {}) => {
   if (!team) return {};
 
   /* ================= NORMALIZE TEAM ID ================= */
   const rawId = getTeamId(team);
 
-  const teamIdKey = rawId ? String(rawId).trim() : "";
+  const teamIdKey = normalizeTeamIdKey(rawId);
 
   /* ================= GET SHEET DATA ================= */
-  const teamNameKey = normalizeLookupKey(getTeamName(team));
-  const shortTagKey = normalizeLookupKey(getTeamTag(team));
-  const meta =
-    metaIndex[normalizeLookupKey(teamIdKey)] ||
-    metaIndex[normalizeLookupKey(getTeamRank(team))] ||
-    metaIndex[teamNameKey] ||
-    metaIndex[shortTagKey] ||
-    {};
+  const meta = teamIdKey ? metaIndex[teamIdKey] || {} : {};
 
   /* ================= BASE URL ================= */
   const base = process.env.BASE_URL || "http://82.29.155.252:3000";
@@ -182,13 +172,25 @@ const mergeTeam = (team, metaIndex = {}) => {
   const finalShortTag =
     sheetShortTag || getTeamTag(team) || "";
 
-  const finalCountryLogo = sheetCountryLogo
+  let finalCountryLogo = sheetCountryLogo
     ? formatImgUri(sheetCountryLogo)
-    : team.country_logo || team.countryLogo || team.flag || "";
+    : formatImgUri(firstValue(team.country_logo, team.countryLogo, team.flag));
 
-  const finalTeamLogo = sheetTeamLogo
+  let finalTeamLogo = sheetTeamLogo
     ? formatImgUri(sheetTeamLogo)
-    : team.team_logo || team.teamLogo || team.logo || "";
+    : formatImgUri(firstValue(team.team_logo, team.teamLogo, team.logo));
+
+  if (teamIdKey && logoCache[teamIdKey]) {
+    finalCountryLogo = finalCountryLogo || logoCache[teamIdKey].country_logo || "";
+    finalTeamLogo = finalTeamLogo || logoCache[teamIdKey].team_logo || "";
+  }
+
+  if (teamIdKey && (finalCountryLogo || finalTeamLogo)) {
+    logoCache[teamIdKey] = {
+      country_logo: finalCountryLogo,
+      team_logo: finalTeamLogo,
+    };
+  }
 
   /* ================= RETURN FINAL OBJECT ================= */
   return {
@@ -206,14 +208,14 @@ const mergeTeam = (team, metaIndex = {}) => {
     teamTag: finalShortTag,
     countryLogo: finalCountryLogo,
     teamLogo: finalTeamLogo,
-    metaMatched: Boolean(meta.team_id || meta.team_name || meta.short_tag),
+    metaMatched: Boolean(teamIdKey && meta.team_id),
   };
 };
 
-const buildStandings = async (id) => {
+const buildStandings = async (id, logoCache = {}) => {
   const data = await fetchMatch(id);
   const metaIndex = await buildTeamMetaIndex();
-  const teams = getTeams(data).map((team) => mergeTeam(team, metaIndex));
+  const teams = getTeams(data).map((team) => mergeTeam(team, metaIndex, logoCache));
 
   return {
     matchId: id,
@@ -228,6 +230,7 @@ const startCentralEngine = (matchId) => {
       clients: new Set(),
       rawJsonData: null,
       latestFrame: null,
+      logoCache: {},
       intervalId: null,
       lastActive: Date.now(),
     };
@@ -252,7 +255,7 @@ const startCentralEngine = (matchId) => {
     }
 
     try {
-      const standings = await buildStandings(matchId);
+      const standings = await buildStandings(matchId, entry.logoCache);
       entry.rawJsonData = standings;
 
       const jsonString = JSON.stringify({
@@ -382,7 +385,10 @@ router.get(
       );
       startCentralEngine(matchId);
 
-      const standingsData = await buildStandings(matchId);
+      const standingsData = await buildStandings(
+        matchId,
+        matchCache[matchId]?.logoCache || {},
+      );
       return res.json({
         success: true,
         type: "tablestandings_static",
