@@ -50,6 +50,8 @@ const fetchMatch = async (id) => {
 const getTeams = (data) =>
   data?.match?.team_stats || data?.team_stats || data?.teams || [];
 
+const normalizeLookupKey = (value) => String(value || "").trim().toLowerCase();
+
 const mergeTeam = (team) => {
   if (!team) return {};
 
@@ -60,10 +62,17 @@ const mergeTeam = (team) => {
   const teamIdKey = rawId ? String(rawId).trim() : "";
 
   /* ================= GET SHEET DATA ================= */
+  const teamNameKey = normalizeLookupKey(team.team_name || team.name);
+  const shortTagKey = normalizeLookupKey(
+    team.short_tag || team.teamTag || team.tag,
+  );
   const meta =
-    store && store.teamMap && store.teamMap[teamIdKey]
-      ? store.teamMap[teamIdKey]
-      : {};
+    (store &&
+      store.teamMap &&
+      (store.teamMap[teamIdKey] ||
+        store.teamMap[teamNameKey] ||
+        store.teamMap[shortTagKey])) ||
+    {};
 
   /* ================= BASE URL ================= */
   const base = process.env.BASE_URL || "http://82.29.155.252:3000";
@@ -80,6 +89,7 @@ const mergeTeam = (team) => {
     }
 
     clean = clean.replace(/^\/+/, "");
+    clean = clean.replace(/^uploads\//i, "");
 
     return `${base}/uploads/${clean}`;
   };

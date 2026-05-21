@@ -58,14 +58,58 @@ console.log("📁 Uploads exposed at /uploads");
 const PORT = process.env.PORT || 3000;
 const SHEET_URL = process.env.SHEET_URL;
 
+const normalizeSheetUrl = (url = "") => {
+  const clean = String(url || "").trim();
+  if (!clean) return "";
+
+  if (
+    clean.includes("docs.google.com/spreadsheets") &&
+    clean.includes("/pubhtml")
+  ) {
+    const sheetUrl = new URL(clean);
+    sheetUrl.pathname = sheetUrl.pathname.replace(/\/pubhtml$/, "/pub");
+    sheetUrl.searchParams.set("output", "csv");
+    return sheetUrl.toString();
+  }
+
+  return clean;
+};
+
 /* ================= CSV PARSER ================= */
 /* ================= CSV PARSER ================= */
 const parseCSVToArray = (csvText) => {
-  const lines = csvText.split("\n");
+  const parseCSVLine = (line) => {
+    const values = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const next = line[i + 1];
+
+      if (char === '"' && inQuotes && next === '"') {
+        current += '"';
+        i++;
+      } else if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === "," && !inQuotes) {
+        values.push(current.trim());
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+
+    values.push(current.trim());
+    return values;
+  };
+
+  const lines = String(csvText || "")
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/);
   if (!lines.length) return [];
 
-  const headers = lines[0]
-    .split(",")
+  const headers = parseCSVLine(lines[0])
     .map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
 
   const records = [];
@@ -73,7 +117,7 @@ const parseCSVToArray = (csvText) => {
   for (let i = 1; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
 
-    const row = lines[i].split(",").map((c) => c.trim());
+    const row = parseCSVLine(lines[i]);
     const obj = {};
 
     headers.forEach((h, idx) => {
@@ -108,10 +152,15 @@ const syncSheetToPostgres = async () => {
   isSyncing = true;
 
   try {
+    const sheetUrl = normalizeSheetUrl(SHEET_URL);
+    if (!sheetUrl) {
+      throw new Error("SHEET_URL missing");
+    }
+
     // 🔥 FIX: Append a unique timestamp query parameter to bypass Google & Axios caches
-    const cacheBusterUrl = SHEET_URL.includes("?")
-      ? `${SHEET_URL}&_cb=${Date.now()}`
-      : `${SHEET_URL}?_cb=${Date.now()}`;
+    const cacheBusterUrl = sheetUrl.includes("?")
+      ? `${sheetUrl}&_cb=${Date.now()}`
+      : `${sheetUrl}?_cb=${Date.now()}`;
 
     const res = await axios.get(cacheBusterUrl, {
       headers: {
@@ -128,6 +177,12 @@ const syncSheetToPostgres = async () => {
 
     for (const t of teams) {
       store.teamMap[String(t.team_id)] = t;
+      if (t.team_name) {
+        store.teamMap[String(t.team_name).trim().toLowerCase()] = t;
+      }
+      if (t.short_tag) {
+        store.teamMap[String(t.short_tag).trim().toLowerCase()] = t;
+      }
 
       await pool.query(
         `INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo, updated_at)
