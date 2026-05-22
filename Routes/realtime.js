@@ -50,6 +50,9 @@ const fetchMatch = async (id) => {
 const getTeams = (data) =>
   data?.match?.team_stats || data?.team_stats || data?.teams || [];
 
+const getPlayerStats = (data) =>
+  data?.match?.player_stats || data?.player_stats || data?.players || undefined;
+
 const firstValue = (...values) =>
   values.find((value) => value !== undefined && value !== null && value !== "");
 const normalizeTeamIdNumber = (value) => {
@@ -94,6 +97,29 @@ const getTeamTag = (team = {}) =>
     team.shortName,
   );
 
+const getPlayerUid = (player = {}) =>
+  firstValue(
+    player.account_id,
+    player.accountId,
+    player.accountID,
+    player.player_uid,
+    player.playerUid,
+    player.playerUID,
+    player.uid,
+    player.player_id,
+    player.playerId,
+    player.id,
+  );
+
+const getPlayerTeamId = (player = {}) =>
+  firstValue(
+    player.team_id,
+    player.teamId,
+    player.team_uid,
+    player.teamUid,
+    player.teamCode,
+  );
+
 const addMetaToIndex = (index, meta) => {
   if (!meta) return;
 
@@ -135,25 +161,42 @@ const formatUploadUri = (value) => {
   return `${base}/uploads/${clean}`;
 };
 
+const normalizePlayerUidKey = (value) => String(value ?? "").trim();
+
 const buildPlayerIndex = async () => {
-  const index = {};
+  const index = {
+    byTeam: {},
+    byTeamAndUid: {},
+  };
 
   try {
     const result = await pool.query(
-      "SELECT id, team_id, player_name, player_pic FROM team_players ORDER BY id DESC",
+      "SELECT id, team_id, player_uid, player_name, camera_link, player_pic FROM team_players ORDER BY id DESC",
     );
 
     for (const player of result.rows) {
       const teamIdKey = normalizeTeamIdKey(player.team_id);
       if (!teamIdKey) continue;
 
-      if (!index[teamIdKey]) index[teamIdKey] = [];
-      index[teamIdKey].push({
+      if (!index.byTeam[teamIdKey]) index.byTeam[teamIdKey] = [];
+      if (!index.byTeamAndUid[teamIdKey]) index.byTeamAndUid[teamIdKey] = {};
+
+      const formattedPlayer = {
         ...player,
         team_id: teamIdKey,
+        playerUid: player.player_uid,
+        playerName: player.player_name,
+        cameraLink: player.camera_link,
         player_pic: formatUploadUri(player.player_pic),
         playerPic: formatUploadUri(player.player_pic),
-      });
+      };
+
+      index.byTeam[teamIdKey].push(formattedPlayer);
+
+      const playerUidKey = normalizePlayerUidKey(player.player_uid);
+      if (playerUidKey && !index.byTeamAndUid[teamIdKey][playerUidKey]) {
+        index.byTeamAndUid[teamIdKey][playerUidKey] = formattedPlayer;
+      }
     }
   } catch (err) {
     console.error("DB player metadata lookup failed:", err.message);
@@ -162,7 +205,95 @@ const buildPlayerIndex = async () => {
   return index;
 };
 
-const mergeTeam = (team, metaIndex = {}, logoCache = {}, playerIndex = {}) => {
+const getPlayerMeta = (player, fallbackTeamIdKey, playerIndex = {}) => {
+  const playerTeamIdKey = normalizeTeamIdKey(getPlayerTeamId(player));
+  const teamIdKey = playerTeamIdKey || fallbackTeamIdKey;
+  const playerUidKey = normalizePlayerUidKey(getPlayerUid(player));
+
+  if (!teamIdKey || !playerUidKey) return null;
+
+  return playerIndex.byTeamAndUid?.[teamIdKey]?.[playerUidKey] || null;
+};
+
+const mergePlayerStat = (player, fallbackTeamIdKey, playerIndex = {}) => {
+  if (!player || typeof player !== "object") return player;
+
+  const meta = getPlayerMeta(player, fallbackTeamIdKey, playerIndex);
+  if (!meta) return player;
+
+  const playerUid = getPlayerUid(player) || meta.playerUid;
+  const playerName = meta.playerName || player.playerName || player.player_name || "";
+  const cameraLink = meta.cameraLink || player.cameraLink || player.camera_link || "";
+  const playerPic = meta.playerPic || player.playerPic || player.player_pic || "";
+
+  return {
+    ...player,
+    account_id: player.account_id || playerUid,
+    player_uid: playerUid,
+    player_name: playerName,
+    camera_link: cameraLink,
+    player_pic: playerPic,
+
+    // compatibility keys for frontend consumers
+    accountId: player.accountId || playerUid,
+    playerUid,
+    uid: player.uid || playerUid,
+    playerName,
+    name: playerName,
+    cameraLink,
+    camLink: cameraLink,
+    camlink: cameraLink,
+    playerPic,
+    pic: playerPic,
+    playerMetaMatched: true,
+  };
+};
+
+const mergePlayerStats = (stats, fallbackTeamIdKey, playerIndex = {}) => {
+  if (Array.isArray(stats)) {
+    return stats.map((player) =>
+      mergePlayerStat(player, fallbackTeamIdKey, playerIndex),
+    );
+  }
+
+  if (stats && typeof stats === "object") {
+    return Object.fromEntries(
+      Object.entries(stats).map(([key, player]) => [
+        key,
+        mergePlayerStat(player, fallbackTeamIdKey, playerIndex),
+      ]),
+    );
+  }
+
+  return stats;
+};
+
+const filterPlayerStatsByTeam = (stats, teamIdKey) => {
+  if (!stats || !teamIdKey) return undefined;
+
+  const belongsToTeam = (player) =>
+    normalizeTeamIdKey(getPlayerTeamId(player)) === teamIdKey;
+
+  if (Array.isArray(stats)) {
+    return stats.filter(belongsToTeam);
+  }
+
+  if (typeof stats === "object") {
+    return Object.fromEntries(
+      Object.entries(stats).filter(([, player]) => belongsToTeam(player)),
+    );
+  }
+
+  return undefined;
+};
+
+const mergeTeam = (
+  team,
+  metaIndex = {},
+  logoCache = {},
+  playerIndex = {},
+  externalPlayerStats,
+) => {
   if (!team) return {};
 
   /* ================= NORMALIZE TEAM ID ================= */
@@ -213,10 +344,22 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}, playerIndex = {}) => {
     };
   }
 
-  const playerPics = teamIdKey ? playerIndex[teamIdKey] || [] : [];
+  const playerPics = teamIdKey ? playerIndex.byTeam?.[teamIdKey] || [] : [];
+  const teamPlayerStats =
+    team.player_stats !== undefined
+      ? team.player_stats
+      : filterPlayerStatsByTeam(externalPlayerStats, teamIdKey);
+  const playerStats =
+    teamPlayerStats !== undefined
+      ? mergePlayerStats(teamPlayerStats, teamIdKey, playerIndex)
+      : undefined;
+  const playerStatsCamel =
+    team.playerStats !== undefined
+      ? mergePlayerStats(team.playerStats, teamIdKey, playerIndex)
+      : undefined;
 
   /* ================= RETURN FINAL OBJECT ================= */
-  return {
+  const mergedTeam = {
     ...team,
 
     team_id: teamIdKey,
@@ -235,19 +378,29 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}, playerIndex = {}) => {
     playerPics,
     metaMatched: Boolean(teamIdKey && meta.team_id),
   };
+
+  if (playerStats !== undefined) mergedTeam.player_stats = playerStats;
+  if (playerStatsCamel !== undefined) mergedTeam.playerStats = playerStatsCamel;
+
+  return mergedTeam;
 };
 
 const buildStandings = async (id, logoCache = {}) => {
   const data = await fetchMatch(id);
   const metaIndex = await buildTeamMetaIndex();
   const playerIndex = await buildPlayerIndex();
+  const externalPlayerStats = getPlayerStats(data);
   const teams = getTeams(data).map((team) =>
-    mergeTeam(team, metaIndex, logoCache, playerIndex),
+    mergeTeam(team, metaIndex, logoCache, playerIndex, externalPlayerStats),
   );
 
   return {
     matchId: id,
     standings: teams,
+    player_stats:
+      externalPlayerStats !== undefined
+        ? mergePlayerStats(externalPlayerStats, "", playerIndex)
+        : undefined,
   };
 };
 

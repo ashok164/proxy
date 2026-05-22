@@ -62,7 +62,8 @@ const teamPlayerRoutes = require("./Routes/teamPlayers");
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
-app.use("/api", teamPlayerRoutes);
+app.use("/", teamPlayerRoutes);
+app.use("/", teamPlayerRoutes);
 app.use("/api/teams", teamRoutes);
 
 /* ================= VERSION ================= */

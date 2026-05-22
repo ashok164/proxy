@@ -20,7 +20,9 @@ const initDB = async () => {
       CREATE TABLE IF NOT EXISTS team_players (
         id SERIAL PRIMARY KEY,
         team_id TEXT NOT NULL,
+        player_uid TEXT,
         player_name TEXT,
+        camera_link TEXT,
         player_pic TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
@@ -32,6 +34,15 @@ const initDB = async () => {
       ADD COLUMN IF NOT EXISTS rank TEXT;
     `);
 
+    await pool.query(`
+      ALTER TABLE team_players
+      ADD COLUMN IF NOT EXISTS player_uid TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE team_players
+      ADD COLUMN IF NOT EXISTS camera_link TEXT;
+    `);
 
     // optional but recommended for esports realtime performance
     await pool.query(`

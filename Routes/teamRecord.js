@@ -199,7 +199,13 @@ router.post(
 router.get("/all", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
-    const result = await pool.query("SELECT * FROM teams ORDER BY id DESC");
+    const result = await pool.query(`
+      SELECT *
+      FROM teams
+      ORDER BY
+        CASE WHEN team_id ~ '^[0-9]+$' THEN team_id::BIGINT END ASC NULLS LAST,
+        team_id ASC
+    `);
 
     const data = result.rows.map((row) => ({
       ...row,
@@ -273,6 +279,71 @@ router.get("/:id", async (req, res) => {
    UPDATE TEAM
 ========================================================= */
 router.put(
+  "/update-by-team-id/:teamId",
+  upload.fields([
+    { name: "teamLogo", maxCount: 1 },
+    { name: "countryLogo", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const baseUrl = getBaseUrl(req);
+      const lookupTeamId = normalizeTeamId(req.params.teamId);
+      const oldTeam = await pool.query("SELECT * FROM teams WHERE team_id = $1", [
+        lookupTeamId,
+      ]);
+
+      if (!oldTeam.rows.length) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Team not found" });
+      }
+
+      const existing = oldTeam.rows[0];
+
+      const teamId = normalizeTeamId(
+        req.body.teamId || req.body.team_id || existing.team_id,
+      );
+      const teamName =
+        req.body.teamName || req.body.team_name || existing.team_name;
+      const shortTag =
+        req.body.shortTag || req.body.short_tag || existing.short_tag;
+
+      const newTeamLogo = req.files?.teamLogo?.[0]?.filename;
+      const newCountryLogo = req.files?.countryLogo?.[0]?.filename;
+
+      const teamLogo = newTeamLogo || existing.team_logo;
+      const countryLogo = newCountryLogo || existing.country_logo;
+
+      const result = await pool.query(
+        `
+        UPDATE teams
+        SET team_id = $1, team_name = $2, short_tag = $3, team_logo = $4, country_logo = $5, updated_at = NOW()
+        WHERE team_id = $6
+        RETURNING *
+        `,
+        [teamId, teamName, shortTag, teamLogo, countryLogo, lookupTeamId],
+      );
+
+      if (newTeamLogo && existing.team_logo) {
+        safelyDeleteFiles([path.join(uploadPath, existing.team_logo)]);
+      }
+      if (newCountryLogo && existing.country_logo) {
+        safelyDeleteFiles([path.join(uploadPath, existing.country_logo)]);
+      }
+
+      const row = result.rows[0];
+      row.team_logo = formatImageUrl(baseUrl, row.team_logo);
+      row.country_logo = formatImageUrl(baseUrl, row.country_logo);
+
+      res.json({ success: true, data: row });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+);
+
+router.put(
   "/update/:id",
   upload.fields([
     { name: "teamLogo", maxCount: 1 },
@@ -340,34 +411,61 @@ router.put(
 /* =========================================================
    DELETE TEAM
 ========================================================= */
-router.delete("/delete/:id", async (req, res) => {
+const deleteTeam = async (req, res, lookupColumn, lookupValue) => {
   try {
-    const result = await pool.query(
-      "DELETE FROM teams WHERE id = $1 RETURNING *",
-      [req.params.id],
+    await pool.query("BEGIN");
+
+    const teamResult = await pool.query(
+      `DELETE FROM teams WHERE ${lookupColumn} = $1 RETURNING *`,
+      [lookupValue],
     );
 
-    if (!result.rows.length) {
+    if (!teamResult.rows.length) {
+      await pool.query("ROLLBACK");
       return res
         .status(404)
         .json({ success: false, message: "Team not found" });
     }
 
-    const deletedRow = result.rows[0];
+    const deletedRow = teamResult.rows[0];
+    const playerResult = await pool.query(
+      "DELETE FROM team_players WHERE team_id = $1 RETURNING *",
+      [deletedRow.team_id],
+    );
 
-    // Wipe physical image assets off storage disk space clean
+    await pool.query("COMMIT");
+
     const filesToDelete = [];
     if (deletedRow.team_logo)
       filesToDelete.push(path.join(uploadPath, deletedRow.team_logo));
     if (deletedRow.country_logo)
       filesToDelete.push(path.join(uploadPath, deletedRow.country_logo));
+    for (const player of playerResult.rows) {
+      if (player.player_pic) {
+        filesToDelete.push(path.join(uploadPath, player.player_pic));
+      }
+    }
     safelyDeleteFiles(filesToDelete);
 
-    res.json({ success: true, message: "Deleted successfully" });
+    res.json({
+      success: true,
+      message: "Team deleted successfully",
+      data: deletedRow,
+      deletedPlayers: playerResult.rowCount,
+    });
   } catch (err) {
+    await pool.query("ROLLBACK").catch(() => {});
     console.error(err);
     res.status(500).json({ success: false, message: err.message });
   }
+};
+
+router.delete("/delete-by-team-id/:teamId", async (req, res) => {
+  return deleteTeam(req, res, "team_id", normalizeTeamId(req.params.teamId));
+});
+
+router.delete("/delete/:id", async (req, res) => {
+  return deleteTeam(req, res, "id", req.params.id);
 });
 
 module.exports = router;

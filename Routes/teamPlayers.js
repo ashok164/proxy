@@ -40,6 +40,27 @@ const toArray = (value) => {
   return Array.isArray(value) ? value : [value];
 };
 
+const firstValue = (...values) =>
+  values.find((value) => value !== undefined && value !== null && value !== "");
+
+const getBodyValue = (body, ...names) => {
+  for (const name of names) {
+    if (body[name] !== undefined) return body[name];
+  }
+
+  const lowerNameMap = Object.keys(body).reduce((acc, key) => {
+    acc[key.toLowerCase()] = key;
+    return acc;
+  }, {});
+
+  for (const name of names) {
+    const actualKey = lowerNameMap[String(name).toLowerCase()];
+    if (actualKey && body[actualKey] !== undefined) return body[actualKey];
+  }
+
+  return undefined;
+};
+
 const normalizeTeamId = (value) => {
   const clean = String(value ?? "").trim();
   if (!/^\d+$/.test(clean)) return clean;
@@ -54,6 +75,103 @@ const formatImageUrl = (baseUrl, imagePath) => {
     return imagePath;
   }
   return `${baseUrl}/uploads/${imagePath.replace(/^\/?uploads\//i, "")}`;
+};
+
+const formatPlayerRow = (baseUrl, row) => ({
+  ...row,
+  uid: row.player_uid,
+  player_pic: formatImageUrl(baseUrl, row.player_pic),
+  playerPic: formatImageUrl(baseUrl, row.player_pic),
+  playerUid: row.player_uid,
+  playerName: row.player_name,
+  cameraLink: row.camera_link,
+});
+
+const parsePlayersPayload = (body = {}) => {
+  const players = [];
+  const rawPlayers = getBodyValue(body, "players");
+
+  if (Array.isArray(rawPlayers)) {
+    players.push(...rawPlayers);
+  } else if (rawPlayers && typeof rawPlayers === "object") {
+    for (const [index, player] of Object.entries(rawPlayers)) {
+      players[Number(index)] = player;
+    }
+  } else if (typeof rawPlayers === "string") {
+    try {
+      const parsed = JSON.parse(rawPlayers);
+      if (Array.isArray(parsed)) players.push(...parsed);
+    } catch (err) {
+      console.warn("Invalid players JSON payload ignored:", err.message);
+    }
+  }
+
+  for (const [key, value] of Object.entries(body)) {
+    const match = key.match(
+      /^players\[(\d+)\]\[(uid|playeruid|playerUid|player_uid|player_name|playerName|name|camera_link|cameraLink|cameralink)\]$/i,
+    );
+    if (!match) continue;
+
+    const index = Number(match[1]);
+    const field = match[2].toLowerCase();
+    if (!players[index]) players[index] = {};
+    players[index][field] = value;
+  }
+
+  return players;
+};
+
+const getPlayerInputAt = (body, players, index) => {
+  const player = players[index] || {};
+
+  return {
+    playerUid: firstValue(
+      player.uid,
+      player.playerUid,
+      player.player_uid,
+      player.playeruid,
+      getBodyValue(player, "uid", "playerUid", "player_uid", "playeruid"),
+      toArray(
+        getBodyValue(body, "playerUid", "player_uid", "playeruid", "uid"),
+      )[index],
+    ),
+    playerName: firstValue(
+      player.playerName,
+      player.player_name,
+      player.playername,
+      player.name,
+      getBodyValue(player, "playerName", "player_name", "playername", "name"),
+      toArray(
+        getBodyValue(body, "playerName", "player_name", "playername", "name"),
+      )[index],
+    ),
+    cameraLink: firstValue(
+      player.cameraLink,
+      player.camera_link,
+      player.cameralink,
+      getBodyValue(player, "cameraLink", "camera_link", "cameralink"),
+      toArray(getBodyValue(body, "cameraLink", "camera_link", "cameralink"))[
+        index
+      ],
+    ),
+  };
+};
+
+let playerColumnsReady = false;
+
+const ensurePlayerColumns = async () => {
+  if (playerColumnsReady) return;
+
+  await pool.query(`
+    ALTER TABLE team_players
+    ADD COLUMN IF NOT EXISTS player_uid TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE team_players
+    ADD COLUMN IF NOT EXISTS camera_link TEXT
+  `);
+
+  playerColumnsReady = true;
 };
 
 const safelyDeleteFiles = (filesArray) => {
@@ -79,10 +197,10 @@ router.post("/team-players", upload.any(), async (req, res) => {
   const files = req.files || [];
 
   try {
-    const teamIds = toArray(req.body.teamId || req.body.team_id);
-    const playerNames = toArray(
-      req.body.playerName || req.body.player_name || req.body.name,
-    );
+    await ensurePlayerColumns();
+
+    const teamIds = toArray(getBodyValue(req.body, "teamId", "team_id"));
+    const players = parsePlayersPayload(req.body);
 
     if (!teamIds.length) {
       safelyDeleteFiles(files);
@@ -105,22 +223,31 @@ router.post("/team-players", upload.any(), async (req, res) => {
 
     for (let i = 0; i < files.length; i++) {
       const teamId = normalizeTeamId(teamIds[i] || teamIds[0]);
-      const playerName = playerNames[i] || null;
+      const playerInput = getPlayerInputAt(req.body, players, i);
+      const playerName = playerInput.playerName || null;
+      const playerUid = playerInput.playerUid || null;
+      const cameraLink = playerInput.cameraLink || null;
 
       if (!teamId) continue;
 
       const result = await pool.query(
         `
-        INSERT INTO team_players (team_id, player_name, player_pic, updated_at)
-        VALUES ($1, $2, $3, NOW())
+        INSERT INTO team_players (
+          team_id,
+          player_uid,
+          player_name,
+          camera_link,
+          player_pic,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, NOW())
         RETURNING *
         `,
-        [teamId, playerName, files[i].filename],
+        [teamId, playerUid, playerName, cameraLink, files[i].filename],
       );
 
       const row = result.rows[0];
-      row.player_pic = formatImageUrl(baseUrl, row.player_pic);
-      rows.push(row);
+      rows.push(formatPlayerRow(baseUrl, row));
     }
 
     await pool.query("COMMIT");
@@ -150,16 +277,201 @@ router.get("/view-team-player", async (req, res) => {
         )
       : await pool.query("SELECT * FROM team_players ORDER BY id DESC");
 
-    const data = result.rows.map((row) => ({
-      ...row,
-      player_pic: formatImageUrl(baseUrl, row.player_pic),
-    }));
+    const data = result.rows.map((row) => formatPlayerRow(baseUrl, row));
 
     return res.json({ success: true, data });
   } catch (err) {
     console.error("Player fetch failed:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
+});
+
+/* =========================================================
+   GET SINGLE PLAYER BY PLAYER UID
+   Frontend endpoint: GET /api/team-players/by-player-uid/:playerUid
+========================================================= */
+router.get("/team-players/by-player-uid/:playerUid", async (req, res) => {
+  try {
+    await ensurePlayerColumns();
+
+    const baseUrl = getBaseUrl(req);
+    const result = await pool.query(
+      "SELECT * FROM team_players WHERE player_uid = $1",
+      [req.params.playerUid],
+    );
+
+    if (!result.rows.length) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Player not found" });
+    }
+
+    return res.json({
+      success: true,
+      data: formatPlayerRow(baseUrl, result.rows[0]),
+    });
+  } catch (err) {
+    console.error("Player fetch by uid failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+const updatePlayer = async (req, res, lookupColumn, lookupValue) => {
+  const baseUrl = getBaseUrl(req);
+  const files = req.files || [];
+  const newPlayerPic = files[0]?.filename;
+
+  try {
+    await ensurePlayerColumns();
+
+    const oldPlayer = await pool.query(
+      `SELECT * FROM team_players WHERE ${lookupColumn} = $1`,
+      [lookupValue],
+    );
+
+    if (!oldPlayer.rows.length) {
+      safelyDeleteFiles(files);
+      return res
+        .status(404)
+        .json({ success: false, message: "Player not found" });
+    }
+
+    const existing = oldPlayer.rows[0];
+    const players = parsePlayersPayload(req.body);
+    const playerInput = getPlayerInputAt(req.body, players, 0);
+    const teamId = normalizeTeamId(
+      getBodyValue(req.body, "teamId", "team_id") || existing.team_id,
+    );
+    const playerUid =
+      playerInput.playerUid || existing.player_uid;
+    const playerName =
+      playerInput.playerName || existing.player_name;
+    const cameraLink =
+      playerInput.cameraLink || existing.camera_link;
+    const playerPic = newPlayerPic || existing.player_pic;
+
+    const result = await pool.query(
+      `
+      UPDATE team_players
+      SET
+        team_id = $1,
+        player_uid = $2,
+        player_name = $3,
+        camera_link = $4,
+        player_pic = $5,
+        updated_at = NOW()
+      WHERE ${lookupColumn} = $6
+      RETURNING *
+      `,
+      [teamId, playerUid, playerName, cameraLink, playerPic, lookupValue],
+    );
+
+    if (newPlayerPic && existing.player_pic) {
+      safelyDeleteFiles([path.join(uploadPath, existing.player_pic)]);
+    }
+
+    return res.json({
+      success: true,
+      data: formatPlayerRow(baseUrl, result.rows[0]),
+    });
+  } catch (err) {
+    safelyDeleteFiles(files);
+    console.error("Player update failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/* =========================================================
+   UPDATE SINGLE PLAYER BY PLAYER UID
+   Frontend endpoint: PUT /api/team-players/by-player-uid/:playerUid
+========================================================= */
+router.put("/team-players/by-player-uid/:playerUid", upload.any(), async (req, res) => {
+  return updatePlayer(req, res, "player_uid", req.params.playerUid);
+});
+
+/* =========================================================
+   UPDATE SINGLE PLAYER
+   Frontend endpoint: PUT /api/team-players/:id
+========================================================= */
+router.put("/team-players/:id", upload.any(), async (req, res) => {
+  return updatePlayer(req, res, "id", req.params.id);
+});
+
+const deletePlayer = async (req, res, lookupColumn, lookupValue) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM team_players WHERE ${lookupColumn} = $1 RETURNING *`,
+      [lookupValue],
+    );
+
+    if (!result.rows.length) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Player not found" });
+    }
+
+    const deletedRow = result.rows[0];
+    if (deletedRow.player_pic) {
+      safelyDeleteFiles([path.join(uploadPath, deletedRow.player_pic)]);
+    }
+
+    return res.json({
+      success: true,
+      message: "Player deleted successfully",
+      data: deletedRow,
+    });
+  } catch (err) {
+    console.error("Player delete failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/* =========================================================
+   DELETE SINGLE PLAYER BY PLAYER UID
+   Frontend endpoint: DELETE /api/team-players/by-player-uid/:playerUid
+========================================================= */
+router.delete("/team-players/by-player-uid/:playerUid", async (req, res) => {
+  return deletePlayer(req, res, "player_uid", req.params.playerUid);
+});
+
+/* =========================================================
+   DELETE ALL PLAYERS IN TEAM
+   Frontend endpoint: DELETE /api/team-players/by-team-id/:teamId
+========================================================= */
+router.delete("/team-players/by-team-id/:teamId", async (req, res) => {
+  try {
+    const teamId = normalizeTeamId(req.params.teamId);
+    const result = await pool.query(
+      "DELETE FROM team_players WHERE team_id = $1 RETURNING *",
+      [teamId],
+    );
+
+    const filesToDelete = [];
+    for (const player of result.rows) {
+      if (player.player_pic) {
+        filesToDelete.push(path.join(uploadPath, player.player_pic));
+      }
+    }
+    safelyDeleteFiles(filesToDelete);
+
+    return res.json({
+      success: true,
+      message: "Team players deleted successfully",
+      deletedPlayers: result.rowCount,
+      data: result.rows,
+    });
+  } catch (err) {
+    console.error("Team players delete failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/* =========================================================
+   DELETE SINGLE PLAYER
+   Frontend endpoint: DELETE /api/team-players/:id
+========================================================= */
+router.delete("/team-players/:id", async (req, res) => {
+  return deletePlayer(req, res, "id", req.params.id);
 });
 
 module.exports = router;
