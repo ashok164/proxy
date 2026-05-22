@@ -40,6 +40,14 @@ const toArray = (value) => {
   return Array.isArray(value) ? value : [value];
 };
 
+const normalizeTeamId = (value) => {
+  const clean = String(value ?? "").trim();
+  if (!/^\d+$/.test(clean)) return clean;
+
+  const numberValue = Number(clean);
+  return Number.isSafeInteger(numberValue) ? String(numberValue) : clean;
+};
+
 const formatImageUrl = (baseUrl, imagePath) => {
   if (!imagePath) return null;
   if (imagePath.startsWith("http://") || imagePath.startsWith("https://")) {
@@ -96,7 +104,7 @@ router.post("/team-players", upload.any(), async (req, res) => {
     const rows = [];
 
     for (let i = 0; i < files.length; i++) {
-      const teamId = teamIds[i] || teamIds[0];
+      const teamId = normalizeTeamId(teamIds[i] || teamIds[0]);
       const playerName = playerNames[i] || null;
 
       if (!teamId) continue;
@@ -133,7 +141,7 @@ router.post("/team-players", upload.any(), async (req, res) => {
 router.get("/view-team-player", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
-    const teamId = req.query.team_id || req.query.teamId;
+    const teamId = normalizeTeamId(req.query.team_id || req.query.teamId);
 
     const result = teamId
       ? await pool.query(

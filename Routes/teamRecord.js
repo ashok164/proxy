@@ -49,6 +49,24 @@ const upload = multer({
 ========================================================= */
 const getBaseUrl = (req) => `${req.protocol}://${req.get("host")}`;
 
+const normalizeTeamId = (value) => {
+  const clean = String(value ?? "").trim();
+  if (!/^\d+$/.test(clean)) return clean;
+
+  const numberValue = Number(clean);
+  return Number.isSafeInteger(numberValue) ? String(numberValue) : clean;
+};
+
+const formatImageUrl = (baseUrl, logoPath) => {
+  if (!logoPath) return null;
+
+  if (logoPath.startsWith("http://") || logoPath.startsWith("https://")) {
+    return logoPath;
+  }
+
+  return `${baseUrl}/uploads/${logoPath.replace(/^\/?uploads\//i, "")}`;
+};
+
 // Helper utility to clean up physical disk files on exception failure states
 const safelyDeleteFiles = (filesArray) => {
   if (!filesArray) return;
@@ -120,7 +138,7 @@ router.post(
       await pool.query("BEGIN");
 
       for (let i = 0; i < teamIds.length; i++) {
-        const teamId = teamIds[i];
+        const teamId = normalizeTeamId(teamIds[i]);
         const teamName = teamNames[i] || null;
         const shortTag = shortTags[i] || null;
 
@@ -183,26 +201,41 @@ router.get("/all", async (req, res) => {
     const baseUrl = getBaseUrl(req);
     const result = await pool.query("SELECT * FROM teams ORDER BY id DESC");
 
-    // Helper function to safely format the image URL
-    const formatImageUrl = (logoPath) => {
-      if (!logoPath) return null;
-
-      // If it already contains http:// or https://, return it exactly as it is
-      if (logoPath.startsWith("http://") || logoPath.startsWith("https://")) {
-        return logoPath;
-      }
-
-      // Otherwise, append your local/VPS hosting base URL path
-      return `${baseUrl}/uploads/${logoPath}`;
-    };
-
     const data = result.rows.map((row) => ({
       ...row,
-      team_logo: formatImageUrl(row.team_logo),
-      country_logo: formatImageUrl(row.country_logo),
+      team_logo: formatImageUrl(baseUrl, row.team_logo),
+      country_logo: formatImageUrl(baseUrl, row.country_logo),
     }));
 
     res.json({ success: true, data });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/* =========================================================
+   GET TEAM BY GARENA TEAM_ID
+========================================================= */
+router.get("/by-team-id/:teamId", async (req, res) => {
+  try {
+    const baseUrl = getBaseUrl(req);
+    const teamId = normalizeTeamId(req.params.teamId);
+    const result = await pool.query("SELECT * FROM teams WHERE team_id = $1", [
+      teamId,
+    ]);
+
+    if (!result.rows.length) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Team not found" });
+    }
+
+    const row = result.rows[0];
+    row.team_logo = formatImageUrl(baseUrl, row.team_logo);
+    row.country_logo = formatImageUrl(baseUrl, row.country_logo);
+
+    res.json({ success: true, data: row });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: err.message });
@@ -226,12 +259,8 @@ router.get("/:id", async (req, res) => {
     }
 
     const row = result.rows[0];
-    row.team_logo = row.team_logo
-      ? `${baseUrl}/uploads/${row.team_logo}`
-      : null;
-    row.country_logo = row.country_logo
-      ? `${baseUrl}/uploads/${row.country_logo}`
-      : null;
+    row.team_logo = formatImageUrl(baseUrl, row.team_logo);
+    row.country_logo = formatImageUrl(baseUrl, row.country_logo);
 
     res.json({ success: true, data: row });
   } catch (err) {
@@ -264,7 +293,9 @@ router.put(
 
       const existing = oldTeam.rows[0];
 
-      const teamId = req.body.teamId || req.body.team_id || existing.team_id;
+      const teamId = normalizeTeamId(
+        req.body.teamId || req.body.team_id || existing.team_id,
+      );
       const teamName =
         req.body.teamName || req.body.team_name || existing.team_name;
       const shortTag =
@@ -295,12 +326,8 @@ router.put(
       }
 
       const row = result.rows[0];
-      row.team_logo = row.team_logo
-        ? `${baseUrl}/uploads/${row.team_logo}`
-        : null;
-      row.country_logo = row.country_logo
-        ? `${baseUrl}/uploads/${row.country_logo}`
-        : null;
+      row.team_logo = formatImageUrl(baseUrl, row.team_logo);
+      row.country_logo = formatImageUrl(baseUrl, row.country_logo);
 
       res.json({ success: true, data: row });
     } catch (err) {

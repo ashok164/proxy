@@ -1,7 +1,6 @@
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
-const axios = require("axios");
 const path = require("path");
 const dotenv = require("dotenv");
 
@@ -27,8 +26,6 @@ const server = http.createServer(app);
 
 /* ================= DB ================= */
 const initDB = require("./Database/initDB");
-const pool = require("./Database/db");
-const store = require("./Data/store");
 
 /* ================= INIT DB ================= */
 (async () => {
@@ -56,171 +53,6 @@ console.log("📁 Uploads exposed at /uploads");
 
 /* ================= CONFIG ================= */
 const PORT = process.env.PORT || 3000;
-const SHEET_URL = process.env.SHEET_URL;
-
-const normalizeSheetUrl = (url = "") => {
-  const clean = String(url || "").trim();
-  if (!clean) return "";
-
-  if (
-    clean.includes("docs.google.com/spreadsheets") &&
-    clean.includes("/pubhtml")
-  ) {
-    const sheetUrl = new URL(clean);
-    sheetUrl.pathname = sheetUrl.pathname.replace(/\/pubhtml$/, "/pub");
-    sheetUrl.searchParams.set("output", "csv");
-    return sheetUrl.toString();
-  }
-
-  return clean;
-};
-
-/* ================= CSV PARSER ================= */
-const parseCSVToArray = (csvText) => {
-  const normalizeTeamId = (value) => {
-    const clean = String(value || "").trim();
-    if (!/^\d+$/.test(clean)) return clean;
-
-    const numericId = Number(clean);
-    return Number.isSafeInteger(numericId) ? String(numericId) : clean;
-  };
-
-  const parseCSVLine = (line) => {
-    const values = [];
-    let current = "";
-    let inQuotes = false;
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      const next = line[i + 1];
-
-      if (char === '"' && inQuotes && next === '"') {
-        current += '"';
-        i++;
-      } else if (char === '"') {
-        inQuotes = !inQuotes;
-      } else if (char === "," && !inQuotes) {
-        values.push(current.trim());
-        current = "";
-      } else {
-        current += char;
-      }
-    }
-
-    values.push(current.trim());
-    return values;
-  };
-
-  const lines = String(csvText || "")
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n/);
-  if (!lines.length) return [];
-
-  const headers = parseCSVLine(lines[0])
-    .map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
-
-  const records = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-
-    const row = parseCSVLine(lines[i]);
-    const obj = {};
-
-    headers.forEach((h, idx) => {
-      obj[h] = row[idx] || "";
-    });
-
-    const currentId = obj.team_id || obj.id;
-
-    if (currentId) {
-      // Clean and normalize the text values safely
-      const cleanId = normalizeTeamId(currentId);
-
-      records.push({
-        rank: (obj.rank || obj.slot || obj.position || "").trim(),
-        team_id: cleanId,
-        team_name: (obj.team_name || obj.name || "").trim(),
-        short_tag: (obj.short_tag || obj.team_tag || obj.tag || "").trim(),
-        team_logo: (obj.team_logo || "").trim(),
-        country_logo: (obj.country_logo || "").trim(),
-      });
-    }
-  }
-
-  return records;
-};
-
-/* ================= SYNC LOCK ================= */
-let isSyncing = false;
-
-/* ================= SYNC SHEET ================= */
-const syncSheetToPostgres = async () => {
-  if (isSyncing) return;
-  isSyncing = true;
-
-  try {
-    const sheetUrl = normalizeSheetUrl(SHEET_URL);
-    if (!sheetUrl) {
-      throw new Error("SHEET_URL missing");
-    }
-
-    // 🔥 FIX: Append a unique timestamp query parameter to bypass Google & Axios caches
-    const cacheBusterUrl = sheetUrl.includes("?")
-      ? `${sheetUrl}&_cb=${Date.now()}`
-      : `${sheetUrl}?_cb=${Date.now()}`;
-
-    const res = await axios.get(cacheBusterUrl, {
-      headers: {
-        "Cache-Control": "no-cache",
-        Pragma: "no-cache",
-        Expires: "0",
-      },
-    });
-
-    const teams = parseCSVToArray(res.data);
-
-    if (!store.teamMap) store.teamMap = {};
-    else Object.keys(store.teamMap).forEach((k) => delete store.teamMap[k]);
-
-    for (const t of teams) {
-      store.teamMap[String(t.team_id)] = t;
-
-      await pool.query(
-        `INSERT INTO teams (rank, team_id, team_name, short_tag, team_logo, country_logo, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
-         ON CONFLICT (team_id)
-         DO UPDATE SET
-           rank = EXCLUDED.rank,
-           team_name = EXCLUDED.team_name,
-           short_tag = EXCLUDED.short_tag,
-           team_logo = EXCLUDED.team_logo,
-           country_logo = EXCLUDED.country_logo,
-           updated_at = NOW()`,
-        [
-          t.rank,
-          t.team_id,
-          t.team_name,
-          t.short_tag,
-          t.team_logo,
-          t.country_logo,
-        ],
-      );
-    }
-
-    console.log(
-      `🔄 Sheet synced successfully: ${teams.length} teams processed.`,
-    );
-  } catch (err) {
-    console.error("❌ Sync error:", err.message);
-  } finally {
-    isSyncing = false;
-  }
-};
-
-/* ================= AUTO SYNC ================= */
-setTimeout(syncSheetToPostgres, 5000);
-setInterval(syncSheetToPostgres, 30000);
 
 /* ================= ROUTES ================= */
 const logoRoutes = require("./Routes/logos");

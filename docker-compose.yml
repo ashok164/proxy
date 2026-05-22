@@ -15,7 +15,6 @@ services:
       - WS_PUSH_INTERVAL_MS=${WS_PUSH_INTERVAL_MS:-5000}
       - API_URL=${API_URL}
       - CLIENT_ID=${CLIENT_ID}
-      - SHEET_URL=${SHEET_URL}
     volumes:
       - uploads:/app/uploads
     restart: unless-stopped

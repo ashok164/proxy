@@ -5,7 +5,6 @@ const https = require("https");
 const os = require("os");
 const router = express.Router();
 
-const store = require("../Data/store");
 const pool = require("../Database/db");
 
 const API_URL = process.env.API_URL;
@@ -105,12 +104,6 @@ const addMetaToIndex = (index, meta) => {
 const buildTeamMetaIndex = async () => {
   const index = {};
 
-  if (store?.teamMap) {
-    for (const meta of Object.values(store.teamMap)) {
-      addMetaToIndex(index, meta);
-    }
-  }
-
   try {
     const result = await pool.query(
       "SELECT team_id, team_name, short_tag, team_logo, country_logo FROM teams",
@@ -177,7 +170,7 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}, playerIndex = {}) => {
 
   const teamIdKey = normalizeTeamIdKey(rawId);
 
-  /* ================= GET SHEET DATA ================= */
+  /* ================= GET DB TEAM DATA ================= */
   const meta = teamIdKey ? metaIndex[teamIdKey] || {} : {};
 
   /* ================= IMAGE FORMATTER ================= */
@@ -185,27 +178,27 @@ const mergeTeam = (team, metaIndex = {}, logoCache = {}, playerIndex = {}) => {
     return formatUploadUri(value);
   };
 
-  /* ================= SHEET VALUES ================= */
-  const sheetTeamName = meta.team_name || meta.name || "";
+  /* ================= DB VALUES ================= */
+  const dbTeamName = meta.team_name || meta.name || "";
 
-  const sheetShortTag = getTeamTag(meta);
+  const dbShortTag = getTeamTag(meta);
 
-  const sheetCountryLogo = meta.country_logo;
+  const dbCountryLogo = meta.country_logo;
 
-  const sheetTeamLogo = meta.team_logo;
+  const dbTeamLogo = meta.team_logo;
 
   /* ================= FINAL MERGED VALUES ================= */
-  const finalTeamName = sheetTeamName || getTeamName(team) || "";
+  const finalTeamName = dbTeamName || getTeamName(team) || "";
 
   const finalShortTag =
-    sheetShortTag || getTeamTag(team) || "";
+    dbShortTag || getTeamTag(team) || "";
 
-  let finalCountryLogo = sheetCountryLogo
-    ? formatImgUri(sheetCountryLogo)
+  let finalCountryLogo = dbCountryLogo
+    ? formatImgUri(dbCountryLogo)
     : formatImgUri(firstValue(team.country_logo, team.countryLogo, team.flag));
 
-  let finalTeamLogo = sheetTeamLogo
-    ? formatImgUri(sheetTeamLogo)
+  let finalTeamLogo = dbTeamLogo
+    ? formatImgUri(dbTeamLogo)
     : formatImgUri(firstValue(team.team_logo, team.teamLogo, team.logo));
 
   if (teamIdKey && logoCache[teamIdKey]) {

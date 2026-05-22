@@ -33,7 +33,6 @@ Make sure `.env` has your real values:
 ```txt
 API_URL=your_api_url
 CLIENT_ID=your_client_id
-SHEET_URL=your_sheet_csv_url
 PORT=3000
 NODE_ENV=production
 WS_PUSH_INTERVAL_MS=5000
