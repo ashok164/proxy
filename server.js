@@ -59,12 +59,16 @@ const logoRoutes = require("./Routes/logos");
 const realtimeRoutes = require("./Routes/realtime");
 const teamRoutes = require("./Routes/teamRecord");
 const teamPlayerRoutes = require("./Routes/teamPlayers");
+const themeColorRoutes = require("./Routes/themeColors");
+const authRoutes = require("./Routes/auth");
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
 app.use("/", teamPlayerRoutes);
 app.use("/", teamPlayerRoutes);
 app.use("/api/teams", teamRoutes);
+app.use("/api/theme", themeColorRoutes);
+app.use("/api/auth", authRoutes);
 
 /* ================= VERSION ================= */
 app.get("/version", (req, res) => {
