@@ -289,10 +289,37 @@ router.get("/view-team-player", async (req, res) => {
 
     const result = teamId
       ? await pool.query(
-          "SELECT * FROM team_players WHERE team_id = $1 ORDER BY id DESC",
+          `
+          SELECT
+            tp.*,
+            t.team_name,
+            t.short_tag,
+            t.team_logo,
+            t.country_logo,
+            t.rank
+          FROM team_players tp
+          LEFT JOIN teams t
+            ON t.team_id = tp.team_id
+          WHERE tp.team_id = $1
+          ORDER BY tp.id DESC
+          `,
           [teamId],
         )
-      : await pool.query("SELECT * FROM team_players ORDER BY id DESC");
+      : await pool.query(
+          `
+          SELECT
+            tp.*,
+            t.team_name,
+            t.short_tag,
+            t.team_logo,
+            t.country_logo,
+            t.rank
+          FROM team_players tp
+          LEFT JOIN teams t
+            ON t.team_id = tp.team_id
+          ORDER BY tp.id DESC
+          `,
+        );
 
     const data = result.rows.map((row) => formatPlayerRow(baseUrl, row));
 
