@@ -399,6 +399,10 @@ const mergeTeam = (
           stat.camera_link,
 
         playerMetaMatched: !!matchedPlayer,
+        team_tag: finalShortTag,
+        country_logo: finalCountryLogo,
+        team_logo: finalTeamLogo,
+        team_name: finalTeamName,
       };
     }),
 
