@@ -80,19 +80,14 @@ const formatImageUrl = (baseUrl, imagePath) => {
 const formatPlayerRow = (baseUrl, row) => ({
   id: row.id,
   teamId: row.team_id,
-
   playerUid: row.player_uid,
   playerName: row.player_name,
   cameraLink: row.camera_link,
-
   playerPic: formatImageUrl(baseUrl, row.player_pic),
-
   teamName: row.team_name,
   shortTag: row.short_tag,
-
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
-
   rank: row.rank,
 });
 

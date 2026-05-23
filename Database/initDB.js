@@ -29,6 +29,27 @@ const initDB = async () => {
       );
     `);
 
+    for (const table of [
+      "weapons",
+      "characters",
+      "skills",
+      "roles",
+      "equipment",
+    ]) {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS ${table} (
+          id SERIAL PRIMARY KEY,
+          asset_id TEXT,
+          name TEXT,
+          description TEXT,
+          image_url TEXT,
+          file_name TEXT,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      `);
+    }
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS theme_colors (
         id INTEGER PRIMARY KEY DEFAULT 1,

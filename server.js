@@ -46,7 +46,9 @@ app.use(express.urlencoded({ extended: true }));
    🔥 IMPORTANT FIX: MAKE UPLOADS PUBLIC (VPS SAFE)
 ========================================================= */
 const uploadPath = path.join(__dirname, "uploads");
+const publicUploadPath = path.join(__dirname, "public/uploads");
 
+app.use("/uploads", express.static(publicUploadPath));
 app.use("/uploads", express.static(uploadPath));
 
 console.log("📁 Uploads exposed at /uploads");
@@ -61,11 +63,13 @@ const teamRoutes = require("./Routes/teamRecord");
 const teamPlayerRoutes = require("./Routes/teamPlayers");
 const themeColorRoutes = require("./Routes/themeColors");
 const authRoutes = require("./Routes/auth");
+const gameAssetRoutes = require("./Routes/gameAssets");
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
 app.use("/", teamPlayerRoutes);
 app.use("/", teamPlayerRoutes);
+app.use("/api", gameAssetRoutes);
 app.use("/api/teams", teamRoutes);
 app.use("/api/theme", themeColorRoutes);
 app.use("/api/auth", authRoutes);
