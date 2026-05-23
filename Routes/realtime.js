@@ -79,13 +79,7 @@ const getTeamId = (team = {}) =>
   );
 
 const getTeamName = (team = {}) =>
-  firstValue(
-    team.team_name,
-    team.teamName,
-    team.name,
-    team.team,
-    team.title,
-  );
+  firstValue(team.team_name, team.teamName, team.name, team.team, team.title);
 
 const getTeamTag = (team = {}) =>
   firstValue(
@@ -222,9 +216,12 @@ const mergePlayerStat = (player, fallbackTeamIdKey, playerIndex = {}) => {
   if (!meta) return player;
 
   const playerUid = getPlayerUid(player) || meta.playerUid;
-  const playerName = meta.playerName || player.playerName || player.player_name || "";
-  const cameraLink = meta.cameraLink || player.cameraLink || player.camera_link || "";
-  const playerPic = meta.playerPic || player.playerPic || player.player_pic || "";
+  const playerName =
+    meta.playerName || player.playerName || player.player_name || "";
+  const cameraLink =
+    meta.cameraLink || player.cameraLink || player.camera_link || "";
+  const playerPic =
+    meta.playerPic || player.playerPic || player.player_pic || "";
 
   return {
     ...player,
@@ -321,8 +318,7 @@ const mergeTeam = (
   /* ================= FINAL MERGED VALUES ================= */
   const finalTeamName = dbTeamName || getTeamName(team) || "";
 
-  const finalShortTag =
-    dbShortTag || getTeamTag(team) || "";
+  const finalShortTag = dbShortTag || getTeamTag(team) || "";
 
   let finalCountryLogo = dbCountryLogo
     ? formatImgUri(dbCountryLogo)
@@ -333,7 +329,8 @@ const mergeTeam = (
     : formatImgUri(firstValue(team.team_logo, team.teamLogo, team.logo));
 
   if (teamIdKey && logoCache[teamIdKey]) {
-    finalCountryLogo = finalCountryLogo || logoCache[teamIdKey].country_logo || "";
+    finalCountryLogo =
+      finalCountryLogo || logoCache[teamIdKey].country_logo || "";
     finalTeamLogo = finalTeamLogo || logoCache[teamIdKey].team_logo || "";
   }
 
@@ -374,8 +371,37 @@ const mergeTeam = (
     teamTag: finalShortTag,
     countryLogo: finalCountryLogo,
     teamLogo: finalTeamLogo,
-    player_pics: playerPics,
-    playerPics,
+
+    player_stats: (team?.player_stats || []).map((stat) => {
+      const matchedPlayer = (team?.player_pics || []).find(
+        (pic) =>
+          String(pic.player_uid || pic.playerUid) ===
+          String(stat.account_id || stat.player_uid || stat.playerUid),
+      );
+
+      return {
+        ...stat,
+
+        // merged player meta
+        player_name:
+          matchedPlayer?.player_name ||
+          matchedPlayer?.playerName ||
+          stat.player_name,
+
+        player_pic:
+          matchedPlayer?.player_pic ||
+          matchedPlayer?.playerPic ||
+          stat.player_pic,
+
+        camera_link:
+          matchedPlayer?.camera_link ||
+          matchedPlayer?.cameraLink ||
+          stat.camera_link,
+
+        playerMetaMatched: !!matchedPlayer,
+      };
+    }),
+
     metaMatched: Boolean(teamIdKey && meta.team_id),
   };
 
