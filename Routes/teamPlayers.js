@@ -85,6 +85,8 @@ const formatPlayerRow = (baseUrl, row) => ({
   playerUid: row.player_uid,
   playerName: row.player_name,
   cameraLink: row.camera_link,
+  countryLogo: formatImageUrl(baseUrl, row.country_logo),
+  teamLogo: formatImageUrl(baseUrl, row.team_logo),
 });
 
 const parsePlayersPayload = (body = {}) => {
