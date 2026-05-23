@@ -182,7 +182,11 @@ const safelyDeleteFiles = (filesArray) => {
       try {
         fs.unlinkSync(filepath);
       } catch (err) {
-        console.error("Failed cleaning up player image:", filepath, err.message);
+        console.error(
+          "Failed cleaning up player image:",
+          filepath,
+          err.message,
+        );
       }
     }
   });
@@ -232,17 +236,30 @@ router.post("/team-players", upload.any(), async (req, res) => {
 
       const result = await pool.query(
         `
-        INSERT INTO team_players (
-          team_id,
-          player_uid,
-          player_name,
-          camera_link,
-          player_pic,
-          updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, NOW())
-        RETURNING *
-        `,
+  WITH inserted_player AS (
+    INSERT INTO team_players (
+      team_id,
+      player_uid,
+      player_name,
+      camera_link,
+      player_pic,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, NOW())
+    RETURNING *
+  )
+
+  SELECT
+    ip.*,
+    t.team_name,
+    t.short_tag,
+    t.team_logo,
+    t.country_logo,
+    t.rank
+  FROM inserted_player ip
+  LEFT JOIN teams t
+    ON t.team_id = ip.team_id
+  `,
         [teamId, playerUid, playerName, cameraLink, files[i].filename],
       );
 
@@ -342,12 +359,9 @@ const updatePlayer = async (req, res, lookupColumn, lookupValue) => {
     const teamId = normalizeTeamId(
       getBodyValue(req.body, "teamId", "team_id") || existing.team_id,
     );
-    const playerUid =
-      playerInput.playerUid || existing.player_uid;
-    const playerName =
-      playerInput.playerName || existing.player_name;
-    const cameraLink =
-      playerInput.cameraLink || existing.camera_link;
+    const playerUid = playerInput.playerUid || existing.player_uid;
+    const playerName = playerInput.playerName || existing.player_name;
+    const cameraLink = playerInput.cameraLink || existing.camera_link;
     const playerPic = newPlayerPic || existing.player_pic;
 
     const result = await pool.query(
@@ -385,9 +399,13 @@ const updatePlayer = async (req, res, lookupColumn, lookupValue) => {
    UPDATE SINGLE PLAYER BY PLAYER UID
    Frontend endpoint: PUT /api/team-players/by-player-uid/:playerUid
 ========================================================= */
-router.put("/team-players/by-player-uid/:playerUid", upload.any(), async (req, res) => {
-  return updatePlayer(req, res, "player_uid", req.params.playerUid);
-});
+router.put(
+  "/team-players/by-player-uid/:playerUid",
+  upload.any(),
+  async (req, res) => {
+    return updatePlayer(req, res, "player_uid", req.params.playerUid);
+  },
+);
 
 /* =========================================================
    UPDATE SINGLE PLAYER
