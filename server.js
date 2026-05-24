@@ -34,6 +34,7 @@ const initDB = require("./Database/initDB");
     console.log("✅ DB initialized");
   } catch (err) {
     console.error("❌ initDB error:", err.message);
+    throw err;
   }
 })();
 
