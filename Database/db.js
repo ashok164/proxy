@@ -12,6 +12,15 @@ const envPath = path.join(__dirname, envFile);
 dotenv.config({ path: envPath, override: true });
 /**========================================= */
 
+console.log("DB CONFIG:", {
+  envFile,
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 5432,
+  user: process.env.DB_USER,
+  database: process.env.DB_NAME,
+  passwordSet: Boolean(process.env.DB_PASSWORD),
+});
+
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
