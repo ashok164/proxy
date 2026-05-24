@@ -162,6 +162,7 @@ const initDB = async () => {
 
   } catch (err) {
     console.error("❌ initDB error:", err.message);
+    throw err;
   }
 };
 
