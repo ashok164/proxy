@@ -72,6 +72,56 @@ const initDB = async () => {
       );
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS circle_analysis (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        circles JSONB NOT NULL DEFAULT '[1,2,3,4,5,6,7,8]'::jsonb,
+        teams JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT circle_analysis_single_row CHECK (id = 1)
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS game_details (
+        id SERIAL PRIMARY KEY,
+        game_id TEXT,
+        game_number TEXT,
+        game_name TEXT,
+        round_name TEXT,
+        phase TEXT,
+        match_id TEXT,
+        map_name TEXT,
+        status TEXT,
+        start_time TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT false,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      ALTER TABLE game_details
+      ADD COLUMN IF NOT EXISTS game_number TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE game_details
+      ADD COLUMN IF NOT EXISTS round_name TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE game_details
+      ADD COLUMN IF NOT EXISTS phase TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE game_details
+      ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT false;
+    `);
+
    await pool.query(`
   CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -117,6 +167,12 @@ const initDB = async () => {
       ON CONFLICT (id) DO NOTHING;
     `);
 
+    await pool.query(`
+      INSERT INTO circle_analysis (id)
+      VALUES (1)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+
     for (const column of [
       "primary_color",
       "secondary_color",
@@ -158,6 +214,14 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_user_auth_tokens_hash ON user_auth_tokens(token_hash);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_game_details_game_id ON game_details(game_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_game_details_match_id ON game_details(match_id);
     `);
 
   } catch (err) {

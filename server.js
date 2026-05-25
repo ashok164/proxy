@@ -66,6 +66,8 @@ const teamPlayerRoutes = require("./Routes/teamPlayers");
 const themeColorRoutes = require("./Routes/themeColors");
 const authRoutes = require("./Routes/auth");
 const gameAssetRoutes = require("./Routes/gameAssets");
+const gameDetailRoutes = require("./Routes/gameDetails");
+const circleAnalysisRoutes = require("./Routes/circleAnalysis");
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
@@ -74,6 +76,8 @@ app.use("/", teamPlayerRoutes);
 app.use("/api/teams", teamRoutes);
 app.use("/api/theme", themeColorRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/game-details", gameDetailRoutes);
+app.use("/api/circle-analysis", circleAnalysisRoutes);
 app.use("/api", gameAssetRoutes);
 
 /* ================= VERSION ================= */
