@@ -12,6 +12,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY server.js ./
 COPY Routes ./Routes
 COPY Data ./Data
+COPY Database ./Database
 
 RUN mkdir -p /app/uploads/logos && chown -R node:node /app
 

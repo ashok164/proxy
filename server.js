@@ -71,10 +71,10 @@ app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
 app.use("/", teamPlayerRoutes);
 app.use("/", teamPlayerRoutes);
-app.use("/api", gameAssetRoutes);
 app.use("/api/teams", teamRoutes);
 app.use("/api/theme", themeColorRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api", gameAssetRoutes);
 
 /* ================= VERSION ================= */
 app.get("/version", (req, res) => {
