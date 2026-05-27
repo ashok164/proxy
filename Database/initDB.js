@@ -103,6 +103,26 @@ const initDB = async () => {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS match_results (
+        id SERIAL PRIMARY KEY,
+        match_id TEXT NOT NULL,
+        team_id TEXT NOT NULL,
+        team_name TEXT,
+        team_tag TEXT,
+        team_logo TEXT,
+        country_logo TEXT,
+        kills INTEGER NOT NULL DEFAULT 0,
+        placement INTEGER NOT NULL DEFAULT 0,
+        booyah_count INTEGER NOT NULL DEFAULT 0,
+        total_kills INTEGER NOT NULL DEFAULT 0,
+        raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT match_results_match_team_unique UNIQUE (match_id, team_id)
+      );
+    `);
+
+    await pool.query(`
       ALTER TABLE game_details
       ADD COLUMN IF NOT EXISTS game_number TEXT;
     `);
@@ -222,6 +242,14 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_game_details_match_id ON game_details(match_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_match_results_match_id ON match_results(match_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_match_results_team_id ON match_results(team_id);
     `);
 
   } catch (err) {

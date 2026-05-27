@@ -68,6 +68,9 @@ const authRoutes = require("./Routes/auth");
 const gameAssetRoutes = require("./Routes/gameAssets");
 const gameDetailRoutes = require("./Routes/gameDetails");
 const circleAnalysisRoutes = require("./Routes/circleAnalysis");
+const matchStatsRoutes = require("./Routes/matchStats");
+const matchResultRoutes = require("./Routes/matchResults");
+const googleSheetsRoutes = require("./Routes/googleSheets");
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
@@ -78,6 +81,9 @@ app.use("/api/theme", themeColorRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/game-details", gameDetailRoutes);
 app.use("/api/circle-analysis", circleAnalysisRoutes);
+app.use("/api/match_stats", matchStatsRoutes);
+app.use("/api/results", matchResultRoutes);
+app.use("/api/results", googleSheetsRoutes);
 app.use("/api", gameAssetRoutes);
 
 /* ================= VERSION ================= */
