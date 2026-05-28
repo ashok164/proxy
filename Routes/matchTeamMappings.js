@@ -116,6 +116,25 @@ const selectMappings = async (matchId) =>
     [matchId],
   );
 
+const ensureMappingTemplatesTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mapping_templates (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      mappings JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+};
+
+const ensureGameDetailsMappingTemplateColumn = async () => {
+  await pool.query(`
+    ALTER TABLE game_details
+    ADD COLUMN IF NOT EXISTS mapping_template_id TEXT;
+  `);
+};
+
 router.get("/", async (req, res) => {
   try {
     const result = await pool.query(`
@@ -292,6 +311,119 @@ router.put("/:matchId", async (req, res) => {
   } catch (err) {
     await pool.query("ROLLBACK").catch(() => {});
     console.error("Match team mappings replace failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.post("/:matchId/apply-template", async (req, res) => {
+  let client;
+
+  try {
+    await ensureMappingTemplatesTable();
+    await ensureGameDetailsMappingTemplateColumn();
+
+    const matchId = toNullableString(req.params.matchId);
+    const mappingTemplateId = toNullableString(
+      getBodyValue(req.body, "mappingTemplateId", "mapping_template_id"),
+    );
+
+    if (!matchId) {
+      return res.status(400).json({
+        success: false,
+        message: "matchId is required",
+      });
+    }
+
+    if (!mappingTemplateId) {
+      return res.status(400).json({
+        success: false,
+        message: "mappingTemplateId is required",
+      });
+    }
+
+    const templateResult = await pool.query(
+      "SELECT * FROM mapping_templates WHERE id = $1",
+      [mappingTemplateId],
+    );
+
+    if (!templateResult.rows.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Mapping template not found",
+      });
+    }
+
+    const template = templateResult.rows[0];
+    const mappings = normalizeMappingsPayload({
+      matchId,
+      mappings: template.mappings || [],
+    });
+
+    const invalidMapping = mappings.find(
+      (mapping) => !mapping.roomTeamId || !mapping.permanentTeamId,
+    );
+    if (!mappings.length || invalidMapping) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected template does not contain valid mappings",
+      });
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+    await client.query("DELETE FROM match_team_mappings WHERE match_id = $1", [
+      matchId,
+    ]);
+
+    for (const mapping of mappings) {
+      await client.query(
+        `
+        INSERT INTO match_team_mappings (
+          match_id,
+          room_team_id,
+          permanent_team_id,
+          slot_number,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, NOW())
+        `,
+        [
+          matchId,
+          mapping.roomTeamId,
+          mapping.permanentTeamId,
+          mapping.slotNumber,
+        ],
+      );
+    }
+
+    await client.query(
+      `
+      UPDATE game_details
+      SET mapping_template_id = $1, updated_at = NOW()
+      WHERE match_id = $2
+      `,
+      [mappingTemplateId, matchId],
+    );
+
+    await client.query("COMMIT");
+    client.release();
+    client = null;
+
+    const result = await selectMappings(matchId);
+    return res.json({
+      success: true,
+      message: "Mapping template applied successfully",
+      matchId,
+      mappingTemplateId,
+      templateName: template.name,
+      data: result.rows.map(formatRow),
+    });
+  } catch (err) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+    }
+    console.error("Mapping template apply failed:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 });

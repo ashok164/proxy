@@ -382,8 +382,9 @@ const buildOverallLeaderboard = async (activeMatchId, liveTeams = []) => {
     };
     const totalKills = historical.historicalKills + live.liveKills;
     const totalPoints = historical.historicalPoints + live.livePoints;
+    const liveRaw = live.liveRaw || {};
 
-    return {
+    const leaderboardFields = {
       rank: 0,
       permanentTeamId: teamId,
       teamId,
@@ -402,6 +403,30 @@ const buildOverallLeaderboard = async (activeMatchId, liveTeams = []) => {
       totalPoints,
       matchesPlayed: historical.matchesPlayed,
       isPlaying: Boolean(liveIndex[teamId]),
+      player_stats: liveRaw.player_stats,
+      playerStats: liveRaw.playerStats,
+      player_pics: liveRaw.player_pics,
+      playerPics: liveRaw.playerPics,
+    };
+
+    if (!live.liveRaw) return leaderboardFields;
+
+    return {
+      ...liveRaw,
+      ...leaderboardFields,
+      team_id: teamId,
+      teamId,
+      permanent_team_id: teamId,
+      permanentTeamId: teamId,
+      room_team_id: live.roomTeamId,
+      roomTeamId: live.roomTeamId,
+      team_name: leaderboardFields.teamName,
+      short_tag: leaderboardFields.teamTag,
+      team_logo: leaderboardFields.teamLogo,
+      country_logo: leaderboardFields.countryLogo,
+      teamTag: leaderboardFields.teamTag,
+      teamLogo: leaderboardFields.teamLogo,
+      countryLogo: leaderboardFields.countryLogo,
     };
   });
 
@@ -775,6 +800,12 @@ const mergeTeam = (
   }
 
   const playerPics = teamIdKey ? playerIndex.byTeam?.[teamIdKey] || [] : [];
+  const teamPlayerPics = Array.isArray(team?.player_pics)
+    ? team.player_pics
+    : Array.isArray(team?.playerPics)
+      ? team.playerPics
+      : [];
+  const mergedPlayerPics = playerPics.length ? playerPics : teamPlayerPics;
   const teamPlayerStats =
     team.player_stats !== undefined
       ? team.player_stats
@@ -810,8 +841,11 @@ const mergeTeam = (
     countryLogo: finalCountryLogo,
     teamLogo: finalTeamLogo,
 
+    player_pics: mergedPlayerPics,
+    playerPics: mergedPlayerPics,
+
     player_stats: (team?.player_stats || []).map((stat) => {
-      const matchedPlayer = (team?.player_pics || []).find(
+      const matchedPlayer = mergedPlayerPics.find(
         (pic) =>
           String(pic.player_uid || pic.playerUid) ===
           String(stat.account_id || stat.player_uid || stat.playerUid),

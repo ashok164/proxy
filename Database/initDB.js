@@ -95,6 +95,7 @@ const initDB = async () => {
         map_name TEXT,
         status TEXT,
         start_time TEXT,
+        mapping_template_id TEXT,
         enabled BOOLEAN NOT NULL DEFAULT false,
         details JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMP DEFAULT NOW(),
@@ -137,6 +138,16 @@ const initDB = async () => {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS mapping_templates (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        mappings JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
       ALTER TABLE game_details
       ADD COLUMN IF NOT EXISTS game_number TEXT;
     `);
@@ -149,6 +160,11 @@ const initDB = async () => {
     await pool.query(`
       ALTER TABLE game_details
       ADD COLUMN IF NOT EXISTS phase TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE game_details
+      ADD COLUMN IF NOT EXISTS mapping_template_id TEXT;
     `);
 
     await pool.query(`
@@ -259,6 +275,10 @@ const initDB = async () => {
     `);
 
     await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_game_details_mapping_template_id ON game_details(mapping_template_id);
+    `);
+
+    await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_match_results_match_id ON match_results(match_id);
     `);
 
@@ -272,6 +292,10 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_match_team_mappings_permanent_team_id ON match_team_mappings(permanent_team_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_mapping_templates_updated_at ON mapping_templates(updated_at);
     `);
 
   } catch (err) {
