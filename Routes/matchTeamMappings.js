@@ -116,6 +116,56 @@ const selectMappings = async (matchId) =>
     [matchId],
   );
 
+router.get("/", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        mtm.match_id,
+        COUNT(*) AS mapping_count,
+        MIN(mtm.created_at) AS created_at,
+        MAX(mtm.updated_at) AS updated_at,
+        JSONB_AGG(
+          JSONB_BUILD_OBJECT(
+            'id', mtm.id,
+            'matchId', mtm.match_id,
+            'roomTeamId', mtm.room_team_id,
+            'permanentTeamId', mtm.permanent_team_id,
+            'slotNumber', mtm.slot_number,
+            'teamName', COALESCE(t.team_name, ''),
+            'teamTag', COALESCE(t.short_tag, ''),
+            'teamLogo', COALESCE(t.team_logo, ''),
+            'countryLogo', COALESCE(t.country_logo, ''),
+            'createdAt', mtm.created_at,
+            'updatedAt', mtm.updated_at
+          )
+          ORDER BY
+            mtm.slot_number ASC NULLS LAST,
+            CASE WHEN mtm.room_team_id ~ '^[0-9]+$' THEN mtm.room_team_id::BIGINT END ASC NULLS LAST,
+            mtm.room_team_id ASC
+        ) AS mappings
+      FROM match_team_mappings mtm
+      LEFT JOIN teams t
+        ON t.team_id = mtm.permanent_team_id
+      GROUP BY mtm.match_id
+      ORDER BY MAX(mtm.updated_at) DESC, mtm.match_id ASC
+    `);
+
+    return res.json({
+      success: true,
+      data: result.rows.map((row) => ({
+        matchId: row.match_id,
+        mappingCount: Number(row.mapping_count),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        mappings: row.mappings || [],
+      })),
+    });
+  } catch (err) {
+    console.error("Match team mappings list failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.post("/create", async (req, res) => {
   try {
     const mappings = normalizeMappingsPayload(req.body);
@@ -296,6 +346,37 @@ router.delete("/:matchId/:roomTeamId", async (req, res) => {
     });
   } catch (err) {
     console.error("Match team mapping delete failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.delete("/:matchId", async (req, res) => {
+  try {
+    const matchId = toNullableString(req.params.matchId);
+    if (!matchId) {
+      return res.status(400).json({
+        success: false,
+        message: "matchId is required",
+      });
+    }
+
+    const result = await pool.query(
+      `
+      DELETE FROM match_team_mappings
+      WHERE match_id = $1
+      RETURNING *
+      `,
+      [matchId],
+    );
+
+    return res.json({
+      success: true,
+      message: "Match team mappings deleted successfully",
+      matchId,
+      deletedCount: result.rowCount,
+    });
+  } catch (err) {
+    console.error("Match team mappings delete failed:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 });

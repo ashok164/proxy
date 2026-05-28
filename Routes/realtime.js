@@ -105,6 +105,12 @@ const getTeamKills = (team = {}) =>
     firstValue(
       team.kills,
       team.kill,
+      team.kill_count,
+      team.killCount,
+      team.kill_score,
+      team.killScore,
+      team.killing_score,
+      team.killingScore,
       team.total_kills,
       team.totalKills,
       team.team_kills,
@@ -121,11 +127,76 @@ const getTeamLivePoints = (team = {}) =>
       team.score,
       team.total_score,
       team.totalScore,
+      team.final_score,
+      team.finalScore,
       team.total_kills,
       team.totalKills,
-      team.kills,
+      toNumber(firstValue(team.ranking_score, team.rankingScore)) +
+        getTeamKills(team),
     ),
   );
+
+const getTeamPlacementPoints = (team = {}) =>
+  toNumber(
+    firstValue(
+      team.placement,
+      team.placement_points,
+      team.placementPoints,
+      team.survival_score,
+      team.survivalScore,
+      team.ranking_score,
+      team.rankingScore,
+    ),
+  );
+
+const getTeamResultScore = (team = {}) => {
+  const explicitScore = firstValue(
+    team.total_points,
+    team.totalPoints,
+    team.points,
+    team.score,
+    team.total_score,
+    team.totalScore,
+    team.final_score,
+    team.finalScore,
+    team.total_kills,
+    team.totalKills,
+  );
+
+  if (explicitScore !== undefined && explicitScore !== null && explicitScore !== "") {
+    return toNumber(explicitScore);
+  }
+
+  return getTeamKills(team) + getTeamPlacementPoints(team);
+};
+
+const hasTeamBooyah = (team = {}) => {
+  const value = firstValue(
+    team.booyah,
+    team.is_booyah,
+    team.isBooyah,
+    team.has_booyah,
+    team.hasBooyah,
+    team.winner,
+    team.isWinner,
+    team.is_winner,
+  );
+
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+
+  const clean = String(value ?? "").trim().toLowerCase();
+  return ["true", "1", "yes", "y", "win", "winner", "booyah"].includes(clean);
+};
+
+const isFinalTeamResult = (team = {}) => {
+  const value = firstValue(team.final, team.is_final, team.isFinal);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  return ["true", "1", "yes", "y", "final"].includes(
+    String(value ?? "").trim().toLowerCase(),
+  );
+};
 
 const getPlayerUid = (player = {}) =>
   firstValue(
@@ -346,6 +417,132 @@ const buildOverallLeaderboard = async (activeMatchId, liveTeams = []) => {
     ...row,
     rank: index + 1,
   }));
+};
+
+let matchResultsTableReady = false;
+
+const ensureMatchResultsTable = async () => {
+  if (matchResultsTableReady) return;
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS match_results (
+      id SERIAL PRIMARY KEY,
+      match_id TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      team_name TEXT,
+      team_tag TEXT,
+      team_logo TEXT,
+      country_logo TEXT,
+      kills INTEGER NOT NULL DEFAULT 0,
+      placement INTEGER NOT NULL DEFAULT 0,
+      booyah_count INTEGER NOT NULL DEFAULT 0,
+      total_kills INTEGER NOT NULL DEFAULT 0,
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      CONSTRAINT match_results_match_team_unique UNIQUE (match_id, team_id)
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_match_results_match_id
+    ON match_results(match_id);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_match_results_team_id
+    ON match_results(team_id);
+  `);
+
+  matchResultsTableReady = true;
+};
+
+const saveRealtimeResultsSnapshot = async (matchId, standings = {}) => {
+  const teams = Array.isArray(standings.standings) ? standings.standings : [];
+  if (!teams.length) {
+    return { savedCount: 0, skippedCount: 0, booyahDetected: false };
+  }
+
+  const booyahDetected = teams.some(hasTeamBooyah);
+  if (!booyahDetected || !teams.some(isFinalTeamResult)) {
+    return { savedCount: 0, skippedCount: 0, booyahDetected: false };
+  }
+
+  await ensureMatchResultsTable();
+
+  let savedCount = 0;
+  let skippedCount = 0;
+
+  for (const team of teams) {
+    const roomTeamId = normalizeTeamIdKey(team.roomTeamId || team.room_team_id || getTeamId(team));
+    const permanentTeamId = normalizeTeamIdKey(
+      team.permanentTeamId || team.permanent_team_id || team.team_id || team.teamId,
+    );
+
+    if (
+      !roomTeamId ||
+      !permanentTeamId ||
+      permanentTeamId === "-1" ||
+      !team.mappingMatched
+    ) {
+      skippedCount += 1;
+      continue;
+    }
+
+    await pool.query(
+      `
+      INSERT INTO match_results (
+        match_id,
+        team_id,
+        team_name,
+        team_tag,
+        team_logo,
+        country_logo,
+        kills,
+        placement,
+        booyah_count,
+        total_kills,
+        raw_payload,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
+      ON CONFLICT (match_id, team_id) DO UPDATE
+      SET
+        team_name = EXCLUDED.team_name,
+        team_tag = EXCLUDED.team_tag,
+        team_logo = EXCLUDED.team_logo,
+        country_logo = EXCLUDED.country_logo,
+        kills = EXCLUDED.kills,
+        placement = EXCLUDED.placement,
+        booyah_count = EXCLUDED.booyah_count,
+        total_kills = EXCLUDED.total_kills,
+        raw_payload = EXCLUDED.raw_payload,
+        updated_at = NOW()
+      `,
+      [
+        matchId,
+        permanentTeamId,
+        getTeamName(team) || "",
+        getTeamTag(team) || "",
+        team.team_logo || team.teamLogo || "",
+        team.country_logo || team.countryLogo || "",
+        Math.trunc(getTeamKills(team)),
+        Math.trunc(getTeamPlacementPoints(team)),
+        hasTeamBooyah(team) ? 1 : 0,
+        Math.trunc(getTeamResultScore(team)),
+        JSON.stringify({
+          ...team,
+          roomTeamId,
+          permanentTeamId,
+          source: "realtime-booyah",
+        }),
+      ],
+    );
+
+    savedCount += 1;
+  }
+
+  return { savedCount, skippedCount, booyahDetected };
 };
 
 const formatUploadUri = (value) => {
@@ -703,6 +900,8 @@ const startCentralEngine = (matchId) => {
       logoCache: {},
       intervalId: null,
       lastActive: Date.now(),
+      resultSaved: false,
+      resultSaveInFlight: false,
     };
   }
 
@@ -727,6 +926,23 @@ const startCentralEngine = (matchId) => {
     try {
       const standings = await buildStandings(matchId, entry.logoCache);
       entry.rawJsonData = standings;
+
+      if (
+        !entry.resultSaved &&
+        !entry.resultSaveInFlight &&
+        standings.standings?.some(hasTeamBooyah)
+      ) {
+        entry.resultSaveInFlight = true;
+        try {
+          const saveResult = await saveRealtimeResultsSnapshot(matchId, standings);
+          entry.resultSaved = saveResult.savedCount > 0;
+          console.log(
+            `[RESULT AUTO-SAVE] Match ${matchId}: saved=${saveResult.savedCount}, skipped=${saveResult.skippedCount}, booyah=${saveResult.booyahDetected}`,
+          );
+        } finally {
+          entry.resultSaveInFlight = false;
+        }
+      }
 
       const jsonString = JSON.stringify({
         type: "tablestandings",
