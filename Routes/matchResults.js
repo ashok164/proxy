@@ -1,12 +1,16 @@
 const express = require("express");
 const axios = require("axios");
+const https = require("https");
+const os = require("os");
 
 const pool = require("../Database/db");
+const realtimeRoutes = require("./realtime");
 
 const router = express.Router();
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
+const TARGET_IP = process.env.VPS_IP || "82.29.155.252";
 
 const getBaseUrl = (req) => `${req.protocol}://${req.get("host")}`;
 
@@ -51,21 +55,48 @@ const getBodyValue = (body, ...names) => {
 const firstValue = (...values) =>
   values.find((value) => value !== undefined && value !== null && value !== "");
 
+const checkLocalIpAvailability = (targetIp) => {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const net of interfaces[name]) {
+      if (net.address === targetIp) return true;
+    }
+  }
+  return false;
+};
+
+const staticIpAgent = checkLocalIpAvailability(TARGET_IP)
+  ? new https.Agent({ localAddress: TARGET_IP })
+  : null;
+
 const getHeaders = () => ({
   "Client-ID": CLIENT_ID,
 });
 
 const fetchRealtimeMatch = async (matchId) => {
-  const response = await axios.get(`${API_URL}/${matchId}`, {
+  const config = {
     headers: getHeaders(),
     timeout: 5000,
-  });
+  };
+
+  if (staticIpAgent) {
+    config.httpsAgent = staticIpAgent;
+  }
+
+  const response = await axios.get(`${API_URL}/${matchId}`, config);
 
   return response.data;
 };
 
+const fetchCachedWebsocketMatch = (matchId) => realtimeRoutes.getCachedStandings?.(matchId);
+
 const getRealtimeTeams = (data) =>
-  data?.match?.team_stats || data?.team_stats || data?.teams || [];
+  data?.data?.standings ||
+  data?.standings ||
+  data?.match?.team_stats ||
+  data?.team_stats ||
+  data?.teams ||
+  [];
 
 const getRealtimeTeamId = (team = {}) =>
   firstValue(
@@ -212,8 +243,30 @@ const ensureMatchResultsTable = async () => {
   matchResultsTableReady = true;
 };
 
+const normalizeStandingsPayload = (body) => {
+  const standings = Array.isArray(body?.data?.standings)
+    ? body.data.standings
+    : Array.isArray(body?.standings)
+      ? body.standings
+      : null;
+
+  if (!standings) return null;
+
+  const matchId = toNullableString(
+    getBodyValue(body?.data || {}, "matchId", "match_id", "matchID") ||
+      getBodyValue(body || {}, "matchId", "match_id", "matchID"),
+  );
+
+  return standings.map((team) => ({
+    ...team,
+    matchId: getBodyValue(team, "matchId", "match_id", "matchID") || matchId,
+  }));
+};
+
 const normalizeResultsPayload = (body) => {
   if (Array.isArray(body)) return body;
+  const standingsRecords = normalizeStandingsPayload(body);
+  if (standingsRecords) return standingsRecords;
   if (Array.isArray(body?.results)) return body.results;
   if (Array.isArray(body?.data)) return body.data;
   if (body && typeof body === "object") return [body];
@@ -247,6 +300,15 @@ const normalizeResult = (input) => {
     getBodyValue(input, "teamId", "team_id", "teamID"),
   );
 
+  const kills = toInteger(
+    getBodyValue(input, "kills", "killing_score", "killingScore", "kill_count", "killCount"),
+  );
+  const placement = toInteger(
+    getBodyValue(input, "placement", "ranking_score", "rankingScore"),
+  );
+  const explicitBooyahCount = getBodyValue(input, "booyahCount", "booyah_count");
+  const explicitTotalKills = getBodyValue(input, "totalKills", "total_kills", "totalScore", "total_score");
+
   return {
     matchId,
     teamId: toNullableString(teamId),
@@ -258,12 +320,18 @@ const normalizeResult = (input) => {
     countryLogo: toNullableString(
       getBodyValue(input, "countryLogo", "country_logo"),
     ),
-    kills: toInteger(getBodyValue(input, "kills")),
-    placement: toInteger(getBodyValue(input, "placement")),
-    booyahCount: toInteger(
-      getBodyValue(input, "booyahCount", "booyah_count"),
-    ),
-    totalKills: toInteger(getBodyValue(input, "totalKills", "total_kills")),
+    kills,
+    placement,
+    booyahCount:
+      explicitBooyahCount !== undefined
+        ? toInteger(explicitBooyahCount)
+        : hasRealtimeBooyah(input)
+          ? 1
+          : 0,
+    totalKills:
+      explicitTotalKills !== undefined
+        ? toInteger(explicitTotalKills)
+        : kills + placement,
     rawPayload: input,
   };
 };
@@ -299,7 +367,9 @@ const resolveMappedPermanentTeamId = async (matchId, teamId) => {
 const saveRealtimeResultsForMatch = async (matchId) => {
   await ensureMatchResultsTable();
 
-  const payload = await fetchRealtimeMatch(matchId);
+  const cachedPayload = fetchCachedWebsocketMatch(matchId);
+  const payload = cachedPayload || (await fetchRealtimeMatch(matchId));
+  const source = cachedPayload ? "websocket-cache" : "realtime";
   const teams = getRealtimeTeams(payload);
 
   if (!teams.length) {
@@ -404,7 +474,7 @@ const saveRealtimeResultsForMatch = async (matchId) => {
           ...team,
           roomTeamId,
           permanentTeamId,
-          source: "realtime",
+          source,
         }),
       ],
     );
@@ -682,38 +752,11 @@ const sendMatchResults = async (req, res, matchIds) => {
   }
 
   const baseUrl = getBaseUrl(req);
-  let result = await queryMatchResults(matchIds);
-  const autoSaveAttempts = [];
-
-  if (result.rows.length === 0) {
-    for (const matchId of matchIds) {
-      try {
-        const saveResult = await saveRealtimeResultsForMatch(matchId);
-        autoSaveAttempts.push({
-          matchId,
-          savedCount: saveResult.savedRows.length,
-          skippedCount: saveResult.skippedRows.length,
-          booyahDetected: saveResult.booyahDetected,
-          finalDetected: saveResult.finalDetected,
-        });
-      } catch (err) {
-        autoSaveAttempts.push({
-          matchId,
-          savedCount: 0,
-          skippedCount: 0,
-          booyahDetected: false,
-          error: err.message,
-        });
-      }
-    }
-
-    result = await queryMatchResults(matchIds);
-  }
+  const result = await queryMatchResults(matchIds);
 
   return res.json({
     success: true,
     matchIds,
-    autoSaveAttempts,
     data: result.rows.map((row) => formatResultRow(row, baseUrl)),
     overall: result.overall.map((row) => formatAggregateRow(row, baseUrl)),
   });

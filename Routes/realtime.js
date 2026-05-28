@@ -927,23 +927,6 @@ const startCentralEngine = (matchId) => {
       const standings = await buildStandings(matchId, entry.logoCache);
       entry.rawJsonData = standings;
 
-      if (
-        !entry.resultSaved &&
-        !entry.resultSaveInFlight &&
-        standings.standings?.some(hasTeamBooyah)
-      ) {
-        entry.resultSaveInFlight = true;
-        try {
-          const saveResult = await saveRealtimeResultsSnapshot(matchId, standings);
-          entry.resultSaved = saveResult.savedCount > 0;
-          console.log(
-            `[RESULT AUTO-SAVE] Match ${matchId}: saved=${saveResult.savedCount}, skipped=${saveResult.skippedCount}, booyah=${saveResult.booyahDetected}`,
-          );
-        } finally {
-          entry.resultSaveInFlight = false;
-        }
-      }
-
       const jsonString = JSON.stringify({
         type: "tablestandings",
         data: standings,
@@ -1088,4 +1071,5 @@ router.get(
 );
 
 router.handleRealtimeWebSocket = handleWS;
+router.getCachedStandings = (matchId) => matchCache[matchId]?.rawJsonData || null;
 module.exports = router;
