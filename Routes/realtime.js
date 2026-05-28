@@ -55,6 +55,12 @@ const getPlayerStats = (data) =>
 
 const firstValue = (...values) =>
   values.find((value) => value !== undefined && value !== null && value !== "");
+
+const toNumber = (value, fallback = 0) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+};
 const normalizeTeamIdNumber = (value) => {
   const clean = String(value ?? "").trim();
   if (!/^\d+$/.test(clean)) return null;
@@ -64,8 +70,11 @@ const normalizeTeamIdNumber = (value) => {
 };
 
 const normalizeTeamIdKey = (value) => {
+  const clean = String(value ?? "").trim();
+  if (!clean) return "";
+
   const numberValue = normalizeTeamIdNumber(value);
-  return numberValue === null ? "" : String(numberValue);
+  return numberValue === null ? clean : String(numberValue);
 };
 
 const getTeamId = (team = {}) =>
@@ -89,6 +98,33 @@ const getTeamTag = (team = {}) =>
     team.shortTag,
     team.tag,
     team.shortName,
+  );
+
+const getTeamKills = (team = {}) =>
+  toNumber(
+    firstValue(
+      team.kills,
+      team.kill,
+      team.total_kills,
+      team.totalKills,
+      team.team_kills,
+      team.teamKills,
+    ),
+  );
+
+const getTeamLivePoints = (team = {}) =>
+  toNumber(
+    firstValue(
+      team.total_points,
+      team.totalPoints,
+      team.points,
+      team.score,
+      team.total_score,
+      team.totalScore,
+      team.total_kills,
+      team.totalKills,
+      team.kills,
+    ),
   );
 
 const getPlayerUid = (player = {}) =>
@@ -137,6 +173,179 @@ const buildTeamMetaIndex = async () => {
   }
 
   return index;
+};
+
+const buildRoomTeamMappingIndex = async (matchId) => {
+  const index = {};
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT room_team_id, permanent_team_id
+      FROM match_team_mappings
+      WHERE match_id = $1
+      `,
+      [matchId],
+    );
+
+    for (const mapping of result.rows) {
+      const roomTeamIdKey = normalizeTeamIdKey(mapping.room_team_id);
+      const permanentTeamIdKey = normalizeTeamIdKey(mapping.permanent_team_id);
+      if (roomTeamIdKey && permanentTeamIdKey) {
+        index[roomTeamIdKey] = permanentTeamIdKey;
+      }
+    }
+  } catch (err) {
+    if (err.code === "42P01") {
+      console.warn("Match team mappings table missing; falling back to raw room team ids");
+    } else {
+      console.error("DB match team mapping lookup failed:", err.message);
+    }
+  }
+
+  return index;
+};
+
+const resolvePermanentTeamId = (roomTeamIdKey, roomTeamMap = {}) =>
+  roomTeamMap[roomTeamIdKey] || roomTeamIdKey;
+
+const buildHistoricalLeaderboardIndex = async (activeMatchId) => {
+  const index = {};
+
+  const result = await pool.query(
+    `
+    SELECT
+      t.team_id,
+      t.team_name,
+      t.short_tag,
+      t.team_logo,
+      t.country_logo,
+      COALESCE(SUM(mr.kills), 0) AS kills,
+      COALESCE(SUM(mr.placement), 0) AS placement,
+      COALESCE(SUM(mr.booyah_count), 0) AS booyah_count,
+      COALESCE(SUM(mr.total_kills), 0) AS total_kills,
+      COUNT(DISTINCT mr.match_id) FILTER (WHERE mr.match_id IS NOT NULL) AS matches_played
+    FROM teams t
+    LEFT JOIN match_results mr
+      ON mr.team_id = t.team_id
+      AND mr.match_id <> $1
+    GROUP BY
+      t.team_id,
+      t.team_name,
+      t.short_tag,
+      t.team_logo,
+      t.country_logo
+    `,
+    [activeMatchId],
+  );
+
+  for (const row of result.rows) {
+    const teamIdKey = normalizeTeamIdKey(row.team_id);
+    if (!teamIdKey) continue;
+
+    index[teamIdKey] = {
+      permanentTeamId: teamIdKey,
+      teamName: row.team_name || "",
+      teamTag: row.short_tag || "",
+      teamLogo: formatUploadUri(row.team_logo),
+      countryLogo: formatUploadUri(row.country_logo),
+      historicalKills: Number(row.kills),
+      historicalPlacement: Number(row.placement),
+      historicalBooyahCount: Number(row.booyah_count),
+      historicalPoints: Number(row.total_kills),
+      matchesPlayed: Number(row.matches_played),
+    };
+  }
+
+  return index;
+};
+
+const buildOverallLeaderboard = async (activeMatchId, liveTeams = []) => {
+  const historicalIndex = await buildHistoricalLeaderboardIndex(activeMatchId);
+  const liveIndex = {};
+
+  for (const team of liveTeams) {
+    const permanentTeamId = normalizeTeamIdKey(
+      team.permanentTeamId || team.permanent_team_id || team.team_id,
+    );
+    if (!permanentTeamId) continue;
+
+    liveIndex[permanentTeamId] = {
+      roomTeamId: normalizeTeamIdKey(team.roomTeamId || team.room_team_id),
+      liveKills: getTeamKills(team),
+      livePoints: getTeamLivePoints(team),
+      liveRaw: team,
+      teamName: getTeamName(team) || "",
+      teamTag: getTeamTag(team) || "",
+      teamLogo: team.teamLogo || team.team_logo || "",
+      countryLogo: team.countryLogo || team.country_logo || "",
+    };
+  }
+
+  const teamIds = new Set([
+    ...Object.keys(historicalIndex),
+    ...Object.keys(liveIndex),
+  ]);
+
+  const rows = [...teamIds].map((teamId) => {
+    const historical = historicalIndex[teamId] || {
+      permanentTeamId: teamId,
+      teamName: "",
+      teamTag: "",
+      teamLogo: "",
+      countryLogo: "",
+      historicalKills: 0,
+      historicalPlacement: 0,
+      historicalBooyahCount: 0,
+      historicalPoints: 0,
+      matchesPlayed: 0,
+    };
+    const live = liveIndex[teamId] || {
+      roomTeamId: null,
+      liveKills: 0,
+      livePoints: 0,
+      teamName: "",
+      teamTag: "",
+      teamLogo: "",
+      countryLogo: "",
+    };
+    const totalKills = historical.historicalKills + live.liveKills;
+    const totalPoints = historical.historicalPoints + live.livePoints;
+
+    return {
+      rank: 0,
+      permanentTeamId: teamId,
+      teamId,
+      roomTeamId: live.roomTeamId,
+      teamName: live.teamName || historical.teamName,
+      teamTag: live.teamTag || historical.teamTag,
+      teamLogo: live.teamLogo || historical.teamLogo,
+      countryLogo: live.countryLogo || historical.countryLogo,
+      historicalKills: historical.historicalKills,
+      historicalPlacement: historical.historicalPlacement,
+      historicalBooyahCount: historical.historicalBooyahCount,
+      historicalPoints: historical.historicalPoints,
+      liveKills: live.liveKills,
+      livePoints: live.livePoints,
+      totalKills,
+      totalPoints,
+      matchesPlayed: historical.matchesPlayed,
+      isPlaying: Boolean(liveIndex[teamId]),
+    };
+  });
+
+  rows.sort(
+    (a, b) =>
+      b.totalPoints - a.totalPoints ||
+      b.totalKills - a.totalKills ||
+      b.historicalBooyahCount - a.historicalBooyahCount ||
+      a.teamName.localeCompare(b.teamName),
+  );
+
+  return rows.map((row, index) => ({
+    ...row,
+    rank: index + 1,
+  }));
 };
 
 const formatUploadUri = (value) => {
@@ -199,9 +408,16 @@ const buildPlayerIndex = async () => {
   return index;
 };
 
-const getPlayerMeta = (player, fallbackTeamIdKey, playerIndex = {}) => {
+const getPlayerMeta = (
+  player,
+  fallbackTeamIdKey,
+  playerIndex = {},
+  roomTeamMap = {},
+) => {
   const playerTeamIdKey = normalizeTeamIdKey(getPlayerTeamId(player));
-  const teamIdKey = playerTeamIdKey || fallbackTeamIdKey;
+  const teamIdKey = playerTeamIdKey
+    ? resolvePermanentTeamId(playerTeamIdKey, roomTeamMap)
+    : fallbackTeamIdKey;
   const playerUidKey = normalizePlayerUidKey(getPlayerUid(player));
 
   if (!teamIdKey || !playerUidKey) return null;
@@ -209,13 +425,22 @@ const getPlayerMeta = (player, fallbackTeamIdKey, playerIndex = {}) => {
   return playerIndex.byTeamAndUid?.[teamIdKey]?.[playerUidKey] || null;
 };
 
-const mergePlayerStat = (player, fallbackTeamIdKey, playerIndex = {}) => {
+const mergePlayerStat = (
+  player,
+  fallbackTeamIdKey,
+  playerIndex = {},
+  roomTeamMap = {},
+) => {
   if (!player || typeof player !== "object") return player;
 
-  const meta = getPlayerMeta(player, fallbackTeamIdKey, playerIndex);
+  const meta = getPlayerMeta(player, fallbackTeamIdKey, playerIndex, roomTeamMap);
   if (!meta) return player;
 
   const playerUid = getPlayerUid(player) || meta.playerUid;
+  const roomTeamId = normalizeTeamIdKey(getPlayerTeamId(player));
+  const resolvedTeamId = roomTeamId
+    ? resolvePermanentTeamId(roomTeamId, roomTeamMap)
+    : fallbackTeamIdKey;
   const playerName =
     meta.playerName || player.playerName || player.player_name || "";
   const cameraLink =
@@ -225,6 +450,10 @@ const mergePlayerStat = (player, fallbackTeamIdKey, playerIndex = {}) => {
 
   return {
     ...player,
+    room_team_id: roomTeamId || player.room_team_id,
+    roomTeamId: roomTeamId || player.roomTeamId,
+    team_id: resolvedTeamId,
+    teamId: resolvedTeamId,
     account_id: player.account_id || playerUid,
     player_uid: playerUid,
     player_name: playerName,
@@ -246,10 +475,15 @@ const mergePlayerStat = (player, fallbackTeamIdKey, playerIndex = {}) => {
   };
 };
 
-const mergePlayerStats = (stats, fallbackTeamIdKey, playerIndex = {}) => {
+const mergePlayerStats = (
+  stats,
+  fallbackTeamIdKey,
+  playerIndex = {},
+  roomTeamMap = {},
+) => {
   if (Array.isArray(stats)) {
     return stats.map((player) =>
-      mergePlayerStat(player, fallbackTeamIdKey, playerIndex),
+      mergePlayerStat(player, fallbackTeamIdKey, playerIndex, roomTeamMap),
     );
   }
 
@@ -257,7 +491,7 @@ const mergePlayerStats = (stats, fallbackTeamIdKey, playerIndex = {}) => {
     return Object.fromEntries(
       Object.entries(stats).map(([key, player]) => [
         key,
-        mergePlayerStat(player, fallbackTeamIdKey, playerIndex),
+        mergePlayerStat(player, fallbackTeamIdKey, playerIndex, roomTeamMap),
       ]),
     );
   }
@@ -265,11 +499,11 @@ const mergePlayerStats = (stats, fallbackTeamIdKey, playerIndex = {}) => {
   return stats;
 };
 
-const filterPlayerStatsByTeam = (stats, teamIdKey) => {
-  if (!stats || !teamIdKey) return undefined;
+const filterPlayerStatsByTeam = (stats, roomTeamIdKey) => {
+  if (!stats || !roomTeamIdKey) return undefined;
 
   const belongsToTeam = (player) =>
-    normalizeTeamIdKey(getPlayerTeamId(player)) === teamIdKey;
+    normalizeTeamIdKey(getPlayerTeamId(player)) === roomTeamIdKey;
 
   if (Array.isArray(stats)) {
     return stats.filter(belongsToTeam);
@@ -290,13 +524,15 @@ const mergeTeam = (
   logoCache = {},
   playerIndex = {},
   externalPlayerStats,
+  roomTeamMap = {},
 ) => {
   if (!team) return {};
 
   /* ================= NORMALIZE TEAM ID ================= */
   const rawId = getTeamId(team);
 
-  const teamIdKey = normalizeTeamIdKey(rawId);
+  const roomTeamIdKey = normalizeTeamIdKey(rawId);
+  const teamIdKey = resolvePermanentTeamId(roomTeamIdKey, roomTeamMap);
 
   /* ================= GET DB TEAM DATA ================= */
   const meta = teamIdKey ? metaIndex[teamIdKey] || {} : {};
@@ -345,14 +581,14 @@ const mergeTeam = (
   const teamPlayerStats =
     team.player_stats !== undefined
       ? team.player_stats
-      : filterPlayerStatsByTeam(externalPlayerStats, teamIdKey);
+      : filterPlayerStatsByTeam(externalPlayerStats, roomTeamIdKey);
   const playerStats =
     teamPlayerStats !== undefined
-      ? mergePlayerStats(teamPlayerStats, teamIdKey, playerIndex)
+      ? mergePlayerStats(teamPlayerStats, teamIdKey, playerIndex, roomTeamMap)
       : undefined;
   const playerStatsCamel =
     team.playerStats !== undefined
-      ? mergePlayerStats(team.playerStats, teamIdKey, playerIndex)
+      ? mergePlayerStats(team.playerStats, teamIdKey, playerIndex, roomTeamMap)
       : undefined;
 
   /* ================= RETURN FINAL OBJECT ================= */
@@ -360,6 +596,11 @@ const mergeTeam = (
     ...team,
 
     team_id: teamIdKey,
+    teamId: teamIdKey,
+    permanent_team_id: teamIdKey,
+    permanentTeamId: teamIdKey,
+    room_team_id: roomTeamIdKey,
+    roomTeamId: roomTeamIdKey,
 
     team_name: finalTeamName,
     short_tag: finalShortTag,
@@ -400,6 +641,12 @@ const mergeTeam = (
 
         playerMetaMatched: !!matchedPlayer,
         team_tag: finalShortTag,
+        team_id: teamIdKey,
+        teamId: teamIdKey,
+        permanent_team_id: teamIdKey,
+        permanentTeamId: teamIdKey,
+        room_team_id: roomTeamIdKey,
+        roomTeamId: roomTeamIdKey,
         country_logo: finalCountryLogo,
         team_logo: finalTeamLogo,
         team_name: finalTeamName,
@@ -407,6 +654,7 @@ const mergeTeam = (
     }),
 
     metaMatched: Boolean(teamIdKey && meta.team_id),
+    mappingMatched: Boolean(roomTeamIdKey && roomTeamMap[roomTeamIdKey]),
   };
 
   if (playerStats !== undefined) mergedTeam.player_stats = playerStats;
@@ -418,18 +666,29 @@ const mergeTeam = (
 const buildStandings = async (id, logoCache = {}) => {
   const data = await fetchMatch(id);
   const metaIndex = await buildTeamMetaIndex();
+  const roomTeamMap = await buildRoomTeamMappingIndex(id);
   const playerIndex = await buildPlayerIndex();
   const externalPlayerStats = getPlayerStats(data);
   const teams = getTeams(data).map((team) =>
-    mergeTeam(team, metaIndex, logoCache, playerIndex, externalPlayerStats),
+    mergeTeam(
+      team,
+      metaIndex,
+      logoCache,
+      playerIndex,
+      externalPlayerStats,
+      roomTeamMap,
+    ),
   );
+  const overallLeaderboard = await buildOverallLeaderboard(id, teams);
 
   return {
     matchId: id,
+    roomTeamMap,
     standings: teams,
+    overallLeaderboard,
     player_stats:
       externalPlayerStats !== undefined
-        ? mergePlayerStats(externalPlayerStats, "", playerIndex)
+        ? mergePlayerStats(externalPlayerStats, "", playerIndex, roomTeamMap)
         : undefined,
   };
 };

@@ -147,6 +147,20 @@ const normalizeResult = (input) => {
   };
 };
 
+const resolvePermanentTeamId = async (matchId, teamId) => {
+  const result = await pool.query(
+    `
+    SELECT permanent_team_id
+    FROM match_team_mappings
+    WHERE match_id = $1 AND room_team_id = $2
+    LIMIT 1
+    `,
+    [matchId, teamId],
+  );
+
+  return result.rows[0]?.permanent_team_id || teamId;
+};
+
 const formatResultRow = (row, baseUrl) => ({
   id: row.id,
   matchId: row.match_id,
@@ -200,6 +214,8 @@ router.post("/create", async (req, res) => {
     await pool.query("BEGIN");
 
     for (const record of records) {
+      record.teamId = await resolvePermanentTeamId(record.matchId, record.teamId);
+
       const teamResult = await pool.query(
         `
         SELECT team_name, short_tag, team_logo, country_logo

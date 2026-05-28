@@ -123,6 +123,20 @@ const initDB = async () => {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS match_team_mappings (
+        id SERIAL PRIMARY KEY,
+        match_id TEXT NOT NULL,
+        room_team_id TEXT NOT NULL,
+        permanent_team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+        slot_number INTEGER,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT match_team_mappings_match_room_unique UNIQUE (match_id, room_team_id),
+        CONSTRAINT match_team_mappings_match_team_unique UNIQUE (match_id, permanent_team_id)
+      );
+    `);
+
+    await pool.query(`
       ALTER TABLE game_details
       ADD COLUMN IF NOT EXISTS game_number TEXT;
     `);
@@ -250,6 +264,14 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_match_results_team_id ON match_results(team_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_match_team_mappings_match_id ON match_team_mappings(match_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_match_team_mappings_permanent_team_id ON match_team_mappings(permanent_team_id);
     `);
 
   } catch (err) {
