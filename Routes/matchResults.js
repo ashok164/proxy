@@ -1113,4 +1113,34 @@ router.post("/by-match-ids", async (req, res) => {
   }
 });
 
+router.delete("/:matchId", async (req, res) => {
+  try {
+    await ensureMatchResultsTable();
+
+    const matchId = toNullableString(req.params.matchId);
+    if (!matchId) {
+      return res.status(400).json({
+        success: false,
+        message: "matchId is required",
+      });
+    }
+
+    const result = await pool.query(
+      "DELETE FROM match_results WHERE match_id = $1 RETURNING id, match_id, team_id",
+      [matchId],
+    );
+
+    return res.json({
+      success: true,
+      message: "Match result deleted successfully",
+      matchId,
+      deletedCount: result.rowCount,
+      deletedRows: result.rows,
+    });
+  } catch (err) {
+    console.error("Match result delete failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;

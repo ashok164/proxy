@@ -186,22 +186,28 @@ const getFreeFireActiveSkill = (player = {}) => {
 
 const getFreeFirePassiveSkills = (player = {}) => {
   const skills = arrayValue(firstValue(player.skill_info, player.skillInfo));
+  const skillIds = arrayValue(firstValue(player.skill_ids, player.skillIds));
+  const activeSkillId = String(getFreeFireActiveSkill(player)?.id || "");
+
+  if (skillIds.length) {
+    return skillIds
+      .map((skillId) => String(skillId))
+      .filter((skillId, index, ids) =>
+        skillId &&
+        skillId !== activeSkillId &&
+        ids.findIndex((id) => String(id) === skillId) === index
+      )
+      .map((skillId) => normalizeAsset({ id: skillId }, "passive_skill"))
+      .filter(Boolean)
+      .slice(0, 3);
+  }
+
   const passiveByInfo = skills
     .filter((skill) => skill.skill_active !== true)
     .map((skill) => normalizeFreeFireSkill(skill, "passive_skill"))
     .filter(Boolean);
-  const existingIds = new Set(passiveByInfo.map((skill) => String(skill.id)));
-  const activeSkillId = String(getFreeFireActiveSkill(player)?.id || "");
-  const passiveByIds = arrayValue(firstValue(player.skill_ids, player.skillIds))
-    .map((skillId) => String(skillId))
-    .filter(
-      (skillId) =>
-        skillId && skillId !== activeSkillId && !existingIds.has(skillId),
-    )
-    .map((skillId) => normalizeAsset({ id: skillId }, "passive_skill"))
-    .filter(Boolean);
 
-  return [...passiveByInfo, ...passiveByIds].slice(0, 3);
+  return passiveByInfo.slice(0, 3);
 };
 
 const getFreeFirePet = (player = {}) =>
@@ -759,7 +765,7 @@ const loadPlayersForMatchResults = async (pool, matchResultIds, baseUrl) => {
         normalizePlayer(rawPayload).passiveSkills,
         anyAssetLookup,
         characterLookup,
-      ),
+      ).slice(0, 3),
       weapon_used: mergeAnyAsset(
         baseUrl,
         {
