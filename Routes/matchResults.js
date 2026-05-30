@@ -5,6 +5,12 @@ const os = require("os");
 
 const pool = require("../Database/db");
 const realtimeRoutes = require("./realtime");
+const {
+  ensureMatchMetadataTables,
+  getPlayersFromTeamPayload,
+  loadPlayersForMatchResults,
+  saveMatchPlayers,
+} = require("../Data/matchMetadata");
 
 const router = express.Router();
 
@@ -208,7 +214,10 @@ const formatImageUrl = (baseUrl, logoPath) => {
 let matchResultsTableReady = false;
 
 const ensureMatchResultsTable = async () => {
-  if (matchResultsTableReady) return;
+  if (matchResultsTableReady) {
+    await ensureMatchMetadataTables(pool);
+    return;
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS match_results (
@@ -240,7 +249,22 @@ const ensureMatchResultsTable = async () => {
     ON match_results(team_id);
   `);
 
+  await pool.query(`
+    DELETE FROM match_results mr
+    USING match_results duplicate
+    WHERE
+      mr.match_id = duplicate.match_id
+      AND mr.team_id = duplicate.team_id
+      AND mr.id < duplicate.id;
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_match_results_match_team_unique
+    ON match_results(match_id, team_id);
+  `);
+
   matchResultsTableReady = true;
+  await ensureMatchMetadataTables(pool);
 };
 
 const normalizeStandingsPayload = (body) => {
@@ -427,6 +451,12 @@ const saveRealtimeResultsForMatch = async (matchId) => {
     const placement = getRealtimePlacementPoints(team);
     const booyahCount = hasRealtimeBooyah(team) ? 1 : 0;
     const totalKills = getRealtimeTotalScore(team);
+    const teamName = teamMeta.team_name || getRealtimeTeamName(team) || "";
+    const teamTag = teamMeta.short_tag || getRealtimeTeamTag(team) || "";
+    const teamLogo =
+      teamMeta.team_logo || firstValue(team.team_logo, team.teamLogo, team.logo) || "";
+    const countryLogo =
+      teamMeta.country_logo || firstValue(team.country_logo, team.countryLogo, team.flag) || "";
 
     const result = await pool.query(
       `
@@ -462,10 +492,10 @@ const saveRealtimeResultsForMatch = async (matchId) => {
       [
         matchId,
         permanentTeamId,
-        getRealtimeTeamName(team) || teamMeta.team_name || "",
-        getRealtimeTeamTag(team) || teamMeta.short_tag || "",
-        teamMeta.team_logo || firstValue(team.team_logo, team.teamLogo, team.logo) || "",
-        teamMeta.country_logo || firstValue(team.country_logo, team.countryLogo, team.flag) || "",
+        teamName,
+        teamTag,
+        teamLogo,
+        countryLogo,
         kills,
         placement,
         booyahCount,
@@ -479,7 +509,16 @@ const saveRealtimeResultsForMatch = async (matchId) => {
       ],
     );
 
-    savedRows.push(result.rows[0]);
+    const savedRow = result.rows[0];
+    await saveMatchPlayers(
+      pool,
+      savedRow.id,
+      matchId,
+      permanentTeamId,
+      getPlayersFromTeamPayload(team),
+    );
+
+    savedRows.push(savedRow);
   }
 
   return {
@@ -505,6 +544,11 @@ const formatResultRow = (row, baseUrl) => ({
   totalKills: row.total_kills,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+});
+
+const formatResultRowWithPlayers = (row, baseUrl, playersByResult = {}) => ({
+  ...formatResultRow(row, baseUrl),
+  players: playersByResult[row.id] || [],
 });
 
 const formatAggregateRow = (row, baseUrl) => ({
@@ -605,6 +649,11 @@ router.post("/create", async (req, res) => {
       );
 
       const team = teamResult.rows[0] || {};
+      const teamName = team.team_name || record.teamName || "";
+      const teamTag = team.short_tag || record.teamTag || "";
+      const teamLogo = team.team_logo || record.teamLogo || "";
+      const countryLogo = team.country_logo || record.countryLogo || "";
+
       const result = await pool.query(
         `
         INSERT INTO match_results (
@@ -639,10 +688,10 @@ router.post("/create", async (req, res) => {
         [
           record.matchId,
           record.teamId,
-          record.teamName || team.team_name || "",
-          record.teamTag || team.short_tag || "",
-          record.teamLogo || team.team_logo || "",
-          record.countryLogo || team.country_logo || "",
+          teamName,
+          teamTag,
+          teamLogo,
+          countryLogo,
           record.kills,
           record.placement,
           record.booyahCount,
@@ -651,15 +700,33 @@ router.post("/create", async (req, res) => {
         ],
       );
 
-      savedRows.push(result.rows[0]);
+      const savedRow = result.rows[0];
+      await saveMatchPlayers(
+        pool,
+        savedRow.id,
+        record.matchId,
+        record.teamId,
+        getPlayersFromTeamPayload(record.rawPayload),
+      );
+
+      savedRows.push(savedRow);
     }
 
     await pool.query("COMMIT");
 
+    const baseUrl = getBaseUrl(req);
+    const playersByResult = await loadPlayersForMatchResults(
+      pool,
+      savedRows.map((row) => row.id),
+      baseUrl,
+    );
+
     return res.json({
       success: true,
       message: "Match results saved successfully",
-      data: savedRows.map((row) => formatResultRow(row, getBaseUrl(req))),
+      data: savedRows.map((row) =>
+        formatResultRowWithPlayers(row, baseUrl, playersByResult),
+      ),
     });
   } catch (err) {
     await pool.query("ROLLBACK").catch(() => {});
@@ -680,6 +747,13 @@ router.post("/from-realtime/:matchId", async (req, res) => {
 
     const result = await saveRealtimeResultsForMatch(matchId);
 
+    const baseUrl = getBaseUrl(req);
+    const playersByResult = await loadPlayersForMatchResults(
+      pool,
+      result.savedRows.map((row) => row.id),
+      baseUrl,
+    );
+
     return res.json({
       success: true,
       message: "Realtime match results saved successfully",
@@ -687,7 +761,9 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       booyahDetected: result.booyahDetected,
       finalDetected: result.finalDetected,
       skippedRows: result.skippedRows,
-      data: result.savedRows.map((row) => formatResultRow(row, getBaseUrl(req))),
+      data: result.savedRows.map((row) =>
+        formatResultRowWithPlayers(row, baseUrl, playersByResult),
+      ),
     });
   } catch (err) {
     console.error("Realtime result save failed:", err);
@@ -727,13 +803,22 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
       });
     }
 
+    const baseUrl = getBaseUrl(req);
+    const playersByResult = await loadPlayersForMatchResults(
+      pool,
+      savedRows.map((row) => row.id),
+      baseUrl,
+    );
+
     return res.json({
       success: true,
       message: "Realtime match results saved successfully",
       matchIds,
       matches: matchSummaries,
       skippedRows,
-      data: savedRows.map((row) => formatResultRow(row, getBaseUrl(req))),
+      data: savedRows.map((row) =>
+        formatResultRowWithPlayers(row, baseUrl, playersByResult),
+      ),
     });
   } catch (err) {
     console.error("Realtime results save failed:", err);
@@ -753,14 +838,248 @@ const sendMatchResults = async (req, res, matchIds) => {
 
   const baseUrl = getBaseUrl(req);
   const result = await queryMatchResults(matchIds);
+  const playersByResult = await loadPlayersForMatchResults(
+    pool,
+    result.rows.map((row) => row.id),
+    baseUrl,
+  );
 
   return res.json({
     success: true,
     matchIds,
-    data: result.rows.map((row) => formatResultRow(row, baseUrl)),
+    data: result.rows.map((row) =>
+      formatResultRowWithPlayers(row, baseUrl, playersByResult),
+    ),
     overall: result.overall.map((row) => formatAggregateRow(row, baseUrl)),
   });
 };
+
+const getFullMatchRows = async (matchIds, baseUrl) => {
+  const result = await queryMatchResults(matchIds);
+  const playersByResult = await loadPlayersForMatchResults(
+    pool,
+    result.rows.map((row) => row.id),
+    baseUrl,
+  );
+
+  return result.rows.map((row) =>
+    formatResultRowWithPlayers(row, baseUrl, playersByResult),
+  );
+};
+
+const flattenPlayers = (teams = []) =>
+  teams.flatMap((team) =>
+    (team.players || []).map((player) => {
+      const impactScore =
+        player.kills * 100 +
+        player.damage +
+        player.assists * 25 +
+        player.knockdowns * 50 +
+        Math.floor((player.survival_time || 0) / 10);
+
+      return {
+        matchId: team.matchId,
+        teamId: team.teamId,
+        teamName: team.teamName,
+        teamLogo: team.teamLogo,
+        countryLogo: team.countryLogo,
+        placement: team.placement,
+        booyahCount: team.booyahCount,
+        impactScore,
+        ...player,
+      };
+    }),
+  );
+
+const isBooyahTeam = (team = {}) =>
+  Number(team.booyahCount) > 0;
+
+const sortByKillsDamageAssists = (a, b) =>
+  b.kills - a.kills ||
+  b.damage - a.damage ||
+  b.assists - a.assists ||
+  b.knockdowns - a.knockdowns ||
+  a.player_name.localeCompare(b.player_name);
+
+const sendPlayerRanking = async (req, res, sortFn, options = {}) => {
+  await ensureMatchResultsTable();
+
+  const baseUrl = getBaseUrl(req);
+  const matchIds = normalizeMatchIdsPayload({
+    matchId: req.params.matchId,
+    ...req.query,
+  });
+  if (!matchIds.length) {
+    return res.status(400).json({
+      success: false,
+      message: "matchId is required",
+    });
+  }
+
+  const teams = await getFullMatchRows(matchIds, baseUrl);
+  const sourceTeams = options.booyahOnly ? teams.filter(isBooyahTeam) : teams;
+  const players = flattenPlayers(sourceTeams)
+    .sort(sortFn)
+    .slice(0, options.limit || undefined);
+
+  return res.json({
+    success: true,
+    matchIds,
+    source: options.booyahOnly ? "booyah_teams" : "all_teams",
+    data: players.map((player, index) => ({
+      rank: index + 1,
+      ...player,
+    })),
+  });
+};
+
+router.get("/team-stats/:matchId", async (req, res) => {
+  try {
+    await ensureMatchResultsTable();
+
+    const baseUrl = getBaseUrl(req);
+    const teams = await getFullMatchRows([toNullableString(req.params.matchId)], baseUrl);
+    const booyahTeams = teams.filter(isBooyahTeam);
+
+    return res.json({
+      success: true,
+      matchId: req.params.matchId,
+      source: "booyah_teams",
+      data: booyahTeams.map((team) => ({
+        teamId: team.teamId,
+        teamName: team.teamName,
+        teamTag: team.teamTag,
+        teamLogo: team.teamLogo,
+        countryLogo: team.countryLogo,
+        kills: team.kills,
+        placement: team.placement,
+        booyahCount: team.booyahCount,
+        totalKills: team.totalKills,
+        players: team.players,
+      })),
+    });
+  } catch (err) {
+    console.error("Team stats fetch failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/mvp/:matchId", async (req, res) => {
+  try {
+    return sendPlayerRanking(
+      req,
+      res,
+      sortByKillsDamageAssists,
+      { booyahOnly: true },
+    );
+  } catch (err) {
+    console.error("MVP fetch failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/top-fraggers/:matchId", async (req, res) => {
+  try {
+    return sendPlayerRanking(
+      req,
+      res,
+      sortByKillsDamageAssists,
+      { limit: 5 },
+    );
+  } catch (err) {
+    console.error("Top fraggers fetch failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/booyah/:matchId", async (req, res) => {
+  try {
+    await ensureMatchResultsTable();
+
+    const baseUrl = getBaseUrl(req);
+    const teams = await getFullMatchRows([toNullableString(req.params.matchId)], baseUrl);
+    const booyahTeams = teams.filter(
+      (team) => team.placement === 1 || team.booyahCount > 0,
+    );
+
+    return res.json({
+      success: true,
+      matchId: req.params.matchId,
+      data: booyahTeams.map((team) => ({
+        team_id: team.teamId,
+        team_name: team.teamName,
+        team_logo: team.teamLogo,
+        country_logo: team.countryLogo,
+        placement: 1,
+        players: team.players,
+      })),
+    });
+  } catch (err) {
+    console.error("Booyah teams fetch failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/booyah-result/:id", async (req, res) => {
+  try {
+    await ensureMatchResultsTable();
+
+    const baseUrl = getBaseUrl(req);
+    const sourceResult = await pool.query(
+      "SELECT match_id FROM match_results WHERE id = $1 LIMIT 1",
+      [req.params.id],
+    );
+
+    if (!sourceResult.rows.length) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Match result not found" });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM match_results
+      WHERE match_id = $1 AND (placement = 1 OR booyah_count > 0)
+      ORDER BY booyah_count DESC, placement ASC, total_kills DESC
+      LIMIT 1
+      `,
+      [sourceResult.rows[0].match_id],
+    );
+
+    if (!result.rows.length) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Booyah team not found" });
+    }
+
+    const playersByResult = await loadPlayersForMatchResults(
+      pool,
+      [result.rows[0].id],
+      baseUrl,
+    );
+    const team = formatResultRowWithPlayers(
+      result.rows[0],
+      baseUrl,
+      playersByResult,
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        team_id: team.teamId,
+        team_name: team.teamName,
+        team_logo: team.teamLogo,
+        country_logo: team.countryLogo,
+        placement: 1,
+        players: team.players,
+      },
+    });
+  } catch (err) {
+    console.error("Booyah result fetch failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 router.get("/", async (req, res) => {
   try {

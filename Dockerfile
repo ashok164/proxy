@@ -14,7 +14,7 @@ COPY Routes ./Routes
 COPY Data ./Data
 COPY Database ./Database
 
-RUN mkdir -p /app/uploads/logos && chown -R node:node /app
+RUN mkdir -p /app/uploads/teamLogo /app/uploads/countryLogo /app/uploads/players && chown -R node:node /app
 
 USER node
 

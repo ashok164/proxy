@@ -8,13 +8,13 @@ const pool = require("../Database/db");
 const router = express.Router();
 
 const uploadPath = path.join(__dirname, "../uploads");
+const PLAYER_UPLOAD_DIR = "players";
 
-if (!fs.existsSync(uploadPath)) {
-  fs.mkdirSync(uploadPath, { recursive: true });
-}
+fs.mkdirSync(path.join(uploadPath, PLAYER_UPLOAD_DIR), { recursive: true });
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadPath),
+  destination: (req, file, cb) =>
+    cb(null, path.join(uploadPath, PLAYER_UPLOAD_DIR)),
   filename: (req, file, cb) => {
     const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
     cb(null, unique + path.extname(file.originalname));
@@ -75,6 +75,31 @@ const formatImageUrl = (baseUrl, imagePath) => {
     return imagePath;
   }
   return `${baseUrl}/uploads/${imagePath.replace(/^\/?uploads\//i, "")}`;
+};
+
+const getUploadRelativePath = (file) =>
+  file ? path.posix.join(PLAYER_UPLOAD_DIR, file.filename) : null;
+
+const resolveUploadPath = (storedPath, fallbackFolder = PLAYER_UPLOAD_DIR) => {
+  if (!storedPath) return null;
+
+  const clean = String(storedPath)
+    .replace(/^https?:\/\/[^/]+\/uploads\//i, "")
+    .replace(/^\/?uploads\//i, "")
+    .replace(/\\/g, "/");
+  const root = path.resolve(uploadPath);
+  const relativePaths = clean.includes("/")
+    ? [clean]
+    : [path.posix.join(fallbackFolder, path.basename(clean)), path.basename(clean)];
+
+  for (const relativePath of relativePaths) {
+    const resolved = path.resolve(uploadPath, relativePath);
+    if (resolved.startsWith(root + path.sep) && fs.existsSync(resolved)) {
+      return resolved;
+    }
+  }
+
+  return null;
 };
 
 const formatPlayerRow = (baseUrl, row) => ({
@@ -264,7 +289,13 @@ router.post("/team-players", upload.any(), async (req, res) => {
   LEFT JOIN teams t
     ON t.team_id = ip.team_id
   `,
-        [teamId, playerUid, playerName, cameraLink, files[i].filename],
+        [
+          teamId,
+          playerUid,
+          playerName,
+          cameraLink,
+          getUploadRelativePath(files[i]),
+        ],
       );
 
       const row = result.rows[0];
@@ -367,7 +398,7 @@ router.get("/team-players/by-player-uid/:playerUid", async (req, res) => {
 const updatePlayer = async (req, res, lookupColumn, lookupValue) => {
   const baseUrl = getBaseUrl(req);
   const files = req.files || [];
-  const newPlayerPic = files[0]?.filename;
+  const newPlayerPic = getUploadRelativePath(files[0]);
 
   try {
     await ensurePlayerColumns();
@@ -412,7 +443,7 @@ const updatePlayer = async (req, res, lookupColumn, lookupValue) => {
     );
 
     if (newPlayerPic && existing.player_pic) {
-      safelyDeleteFiles([path.join(uploadPath, existing.player_pic)]);
+      safelyDeleteFiles([resolveUploadPath(existing.player_pic)]);
     }
 
     return res.json({
@@ -461,7 +492,7 @@ const deletePlayer = async (req, res, lookupColumn, lookupValue) => {
 
     const deletedRow = result.rows[0];
     if (deletedRow.player_pic) {
-      safelyDeleteFiles([path.join(uploadPath, deletedRow.player_pic)]);
+      safelyDeleteFiles([resolveUploadPath(deletedRow.player_pic)]);
     }
 
     return res.json({
@@ -498,7 +529,7 @@ router.delete("/team-players/by-team-id/:teamId", async (req, res) => {
     const filesToDelete = [];
     for (const player of result.rows) {
       if (player.player_pic) {
-        filesToDelete.push(path.join(uploadPath, player.player_pic));
+        filesToDelete.push(resolveUploadPath(player.player_pic));
       }
     }
     safelyDeleteFiles(filesToDelete);

@@ -6,6 +6,12 @@ const os = require("os");
 const router = express.Router();
 
 const pool = require("../Database/db");
+const {
+  buildAssetLookup,
+  formatRealtimePlayer,
+  getPlayersFromTeamPayload,
+  saveMatchPlayers,
+} = require("../Data/matchMetadata");
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -514,7 +520,7 @@ const saveRealtimeResultsSnapshot = async (matchId, standings = {}) => {
       continue;
     }
 
-    await pool.query(
+    const result = await pool.query(
       `
       INSERT INTO match_results (
         match_id,
@@ -543,6 +549,7 @@ const saveRealtimeResultsSnapshot = async (matchId, standings = {}) => {
         total_kills = EXCLUDED.total_kills,
         raw_payload = EXCLUDED.raw_payload,
         updated_at = NOW()
+      RETURNING *
       `,
       [
         matchId,
@@ -562,6 +569,14 @@ const saveRealtimeResultsSnapshot = async (matchId, standings = {}) => {
           source: "realtime-booyah",
         }),
       ],
+    );
+
+    await saveMatchPlayers(
+      pool,
+      result.rows[0].id,
+      matchId,
+      permanentTeamId,
+      getPlayersFromTeamPayload(team),
     );
 
     savedCount += 1;
@@ -584,6 +599,25 @@ const formatUploadUri = (value) => {
   clean = clean.replace(/^uploads\//i, "");
 
   return `${base}/uploads/${clean}`;
+};
+
+const formatRealtimePlayerStats = (stats, assetLookup = {}) => {
+  const baseUrl = process.env.BASE_URL || "http://82.29.155.252:3000";
+
+  if (Array.isArray(stats)) {
+    return stats.map((player) => formatRealtimePlayer(player, baseUrl, assetLookup));
+  }
+
+  if (stats && typeof stats === "object") {
+    return Object.fromEntries(
+      Object.entries(stats).map(([key, player]) => [
+        key,
+        formatRealtimePlayer(player, baseUrl, assetLookup),
+      ]),
+    );
+  }
+
+  return stats;
 };
 
 const normalizePlayerUidKey = (value) => String(value ?? "").trim();
@@ -747,6 +781,7 @@ const mergeTeam = (
   playerIndex = {},
   externalPlayerStats,
   roomTeamMap = {},
+  assetLookup = {},
 ) => {
   if (!team) return {};
 
@@ -888,8 +923,12 @@ const mergeTeam = (
     mappingMatched: Boolean(roomTeamIdKey && roomTeamMap[roomTeamIdKey]),
   };
 
-  if (playerStats !== undefined) mergedTeam.player_stats = playerStats;
-  if (playerStatsCamel !== undefined) mergedTeam.playerStats = playerStatsCamel;
+  if (playerStats !== undefined) {
+    mergedTeam.player_stats = formatRealtimePlayerStats(playerStats, assetLookup);
+  }
+  if (playerStatsCamel !== undefined) {
+    mergedTeam.playerStats = formatRealtimePlayerStats(playerStatsCamel, assetLookup);
+  }
 
   return mergedTeam;
 };
@@ -899,6 +938,10 @@ const buildStandings = async (id, logoCache = {}) => {
   const metaIndex = await buildTeamMetaIndex();
   const roomTeamMap = await buildRoomTeamMappingIndex(id);
   const playerIndex = await buildPlayerIndex();
+  const assetLookup = await buildAssetLookup(
+    pool,
+    process.env.BASE_URL || "http://82.29.155.252:3000",
+  );
   const externalPlayerStats = getPlayerStats(data);
   const teams = getTeams(data).map((team) =>
     mergeTeam(
@@ -908,6 +951,7 @@ const buildStandings = async (id, logoCache = {}) => {
       playerIndex,
       externalPlayerStats,
       roomTeamMap,
+      assetLookup,
     ),
   );
   const overallLeaderboard = await buildOverallLeaderboard(id, teams);
@@ -919,7 +963,10 @@ const buildStandings = async (id, logoCache = {}) => {
     overallLeaderboard,
     player_stats:
       externalPlayerStats !== undefined
-        ? mergePlayerStats(externalPlayerStats, "", playerIndex, roomTeamMap)
+        ? formatRealtimePlayerStats(
+            mergePlayerStats(externalPlayerStats, "", playerIndex, roomTeamMap),
+            assetLookup,
+          )
         : undefined,
   };
 };

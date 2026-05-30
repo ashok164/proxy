@@ -23,6 +23,11 @@ const ASSET_MODULES = {
     singular: "Skill",
     plural: "Skills",
   },
+  pets: {
+    table: "pets",
+    singular: "Pet",
+    plural: "Pets",
+  },
   roles: {
     table: "roles",
     singular: "Role",
@@ -35,10 +40,11 @@ const ASSET_MODULES = {
   },
 };
 
-const publicUploadRoot = path.join(__dirname, "../public/uploads");
+const uploadRoot = path.join(__dirname, "../uploads");
+const legacyPublicUploadRoot = path.join(__dirname, "../public/uploads");
 
 for (const moduleName of Object.keys(ASSET_MODULES)) {
-  fs.mkdirSync(path.join(publicUploadRoot, moduleName), { recursive: true });
+  fs.mkdirSync(path.join(uploadRoot, moduleName), { recursive: true });
 }
 
 const safeFilename = (filename) => {
@@ -61,7 +67,7 @@ const storage = multer.diskStorage({
       return cb(new Error("Unsupported asset module"));
     }
 
-    return cb(null, path.join(publicUploadRoot, moduleName));
+    return cb(null, path.join(uploadRoot, moduleName));
   },
   filename: (req, file, cb) => {
     const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
@@ -282,11 +288,27 @@ const deleteUploadedFiles = (files = []) => {
 const deleteImageByUrl = (imageUrl) => {
   if (!imageUrl) return;
 
-  const relativePath = imageUrl.replace(/^\/?uploads\//i, "");
-  const filepath = path.join(publicUploadRoot, relativePath);
+  const relativePath = String(imageUrl)
+    .replace(/^https?:\/\/[^/]+\/uploads\//i, "")
+    .replace(/^\/?uploads\//i, "")
+    .replace(/\\/g, "/");
+  const candidates = [
+    path.resolve(uploadRoot, relativePath),
+    path.resolve(legacyPublicUploadRoot, relativePath),
+  ];
 
-  if (!filepath.startsWith(publicUploadRoot) || !fs.existsSync(filepath)) return;
-  deleteUploadedFiles([filepath]);
+  for (const filepath of candidates) {
+    const root = filepath.startsWith(path.resolve(uploadRoot) + path.sep)
+      ? path.resolve(uploadRoot)
+      : path.resolve(legacyPublicUploadRoot);
+
+    if (!filepath.startsWith(root + path.sep) || !fs.existsSync(filepath)) {
+      continue;
+    }
+
+    deleteUploadedFiles([filepath]);
+    return;
+  }
 };
 
 router.param("moduleName", (req, res, next, moduleName) => {
