@@ -175,6 +175,13 @@ const formatRow = (row) => ({
   enabled: row.enabled,
 });
 
+const formatMatchNumberRow = (row) => ({
+  id: row.id,
+  matchNumber: row.game_number,
+  gameNumber: row.game_number,
+  matchId: row.match_id,
+});
+
 router.post("/create", async (req, res) => {
   try {
     await ensureGameDetailsTable();
@@ -234,7 +241,7 @@ router.get("/all", async (req, res) => {
     const result = await pool.query(`
       SELECT *
       FROM game_details
-      ORDER BY id DESC
+      ORDER BY id ASC
     `);
 
     return res.json({
@@ -243,6 +250,28 @@ router.get("/all", async (req, res) => {
     });
   } catch (err) {
     console.error("Game details fetch failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/match-numbers", async (req, res) => {
+  try {
+    await ensureGameDetailsTable();
+
+    const result = await pool.query(`
+      SELECT id, game_number, match_id
+      FROM game_details
+      WHERE game_number IS NOT NULL
+        AND TRIM(game_number) <> ''
+      ORDER BY id ASC
+    `);
+
+    return res.json({
+      success: true,
+      data: result.rows.map(formatMatchNumberRow),
+    });
+  } catch (err) {
+    console.error("Game detail match numbers fetch failed:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
