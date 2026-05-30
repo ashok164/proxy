@@ -99,6 +99,9 @@ const fetchCachedWebsocketMatch = (matchId) => realtimeRoutes.getCachedStandings
 const getRealtimeTeams = (data) =>
   data?.data?.standings ||
   data?.standings ||
+  (Array.isArray(data?.match_stats)
+    ? data.match_stats.flatMap((match) => match?.team_stats || [])
+    : null) ||
   data?.match?.team_stats ||
   data?.team_stats ||
   data?.teams ||

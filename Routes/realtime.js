@@ -53,11 +53,23 @@ const fetchMatch = async (id) => {
   return res.data;
 };
 
-const getTeams = (data) =>
-  data?.match?.team_stats || data?.team_stats || data?.teams || [];
+const getTeams = (data) => {
+  if (Array.isArray(data?.match_stats)) {
+    return data.match_stats.flatMap((match) => match?.team_stats || []);
+  }
+
+  return data?.match?.team_stats || data?.team_stats || data?.teams || [];
+};
 
 const getPlayerStats = (data) =>
-  data?.match?.player_stats || data?.player_stats || data?.players || undefined;
+  data?.match?.player_stats ||
+  data?.player_stats ||
+  data?.players ||
+  (Array.isArray(data?.match_stats)
+    ? data.match_stats.flatMap((match) =>
+        (match?.team_stats || []).flatMap((team) => team?.player_stats || []),
+      )
+    : undefined);
 
 const firstValue = (...values) =>
   values.find((value) => value !== undefined && value !== null && value !== "");

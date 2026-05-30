@@ -105,6 +105,21 @@ const normalizeAsset = (value, fallbackType) => {
     ),
   );
   const name = toNullableString(firstValue(value.name, value.title, value.label)) || "";
+  const assetName =
+    toNullableString(
+      firstValue(
+        value.skill_name,
+        value.skillName,
+        value.weapon_name,
+        value.weaponName,
+        value.pet_skill_name,
+        value.petSkillName,
+        value.pet_name,
+        value.petName,
+        value.character_name,
+        value.characterName,
+      ),
+    ) || name;
   const image = normalizeUploadPath(
     firstValue(
       value.image,
@@ -118,11 +133,11 @@ const normalizeAsset = (value, fallbackType) => {
     ),
   );
 
-  if (!id && !name && !image) return null;
+  if (!id && !assetName && !image) return null;
 
   return {
-    id: id || name || path.basename(image || ""),
-    name,
+    id: id || assetName || path.basename(image || ""),
+    name: assetName,
     image,
     type: fallbackType,
   };
@@ -640,7 +655,7 @@ const loadPlayersForMatchResults = async (pool, matchResultIds, baseUrl) => {
       c.asset_id AS character_id,
       c.name AS character_name,
       c.image_url AS character_image,
-      a.asset_id AS active_skill_id,
+      COALESCE(a.asset_id, p.active_skill_asset_id) AS active_skill_id,
       a.name AS active_skill_name,
       a.image_url AS active_skill_image,
       w.asset_id AS weapon_id,
@@ -664,7 +679,12 @@ const loadPlayersForMatchResults = async (pool, matchResultIds, baseUrl) => {
   const passiveResult = playerIds.length
     ? await pool.query(
         `
-        SELECT ps.match_player_id, s.asset_id, s.name, s.image_url, ps.slot
+        SELECT
+          ps.match_player_id,
+          COALESCE(s.asset_id, ps.skill_asset_id) AS asset_id,
+          s.name,
+          s.image_url,
+          ps.slot
         FROM match_player_passive_skills ps
         LEFT JOIN characters s ON s.asset_id = ps.skill_asset_id
         WHERE ps.match_player_id = ANY($1::int[])
@@ -805,10 +825,8 @@ const formatRealtimePlayer = (player = {}, baseUrl, assetLookup = {}) => {
     const stored = assetLookup[lookupType]?.[asset.id] || {};
     return {
       id: asset.id || stored.id || "",
-      name: asset.name || stored.name || "",
-      image: asset.image
-        ? formatImageUrl(baseUrl, asset.image)
-        : stored.image || "",
+      name: stored.name || asset.name || "",
+      image: stored.image || (asset.image ? formatImageUrl(baseUrl, asset.image) : ""),
     };
   };
 
