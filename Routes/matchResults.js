@@ -568,14 +568,14 @@ const formatAggregateRow = (row, baseUrl, playersByTeam = {}) => ({
   players: playersByTeam[row.team_id] || [],
 });
 
-const buildOverallPlayersByTeam = (rows = [], playersByResult = {}) => {
+const buildOverallPlayersByTeam = (rows = []) => {
   const playersByTeam = {};
 
   for (const row of rows) {
-    const teamId = row.team_id;
+    const teamId = row.teamId || row.team_id;
     if (!playersByTeam[teamId]) playersByTeam[teamId] = {};
 
-    for (const player of playersByResult[row.id] || []) {
+    for (const player of row.players || []) {
       const playerKey = player.player_id || player.player_name;
       if (!playerKey) continue;
 
@@ -599,7 +599,7 @@ const buildOverallPlayersByTeam = (rows = [], playersByResult = {}) => {
       aggregate.knockdowns += Number(player.knockdowns || 0);
       aggregate.survival_time += Number(player.survival_time || 0);
       aggregate.matchesPlayed += 1;
-      aggregate.matchIds.push(row.match_id);
+      aggregate.matchIds.push(row.matchId || row.match_id);
     }
   }
 
@@ -897,14 +897,15 @@ const sendMatchResults = async (req, res, matchIds) => {
     result.rows.map((row) => row.id),
     baseUrl,
   );
-  const playersByTeam = buildOverallPlayersByTeam(result.rows, playersByResult);
+  const dataRows = result.rows.map((row) =>
+    formatResultRowWithPlayers(row, baseUrl, playersByResult),
+  );
+  const playersByTeam = buildOverallPlayersByTeam(dataRows);
 
   return res.json({
     success: true,
     matchIds,
-    data: result.rows.map((row) =>
-      formatResultRowWithPlayers(row, baseUrl, playersByResult),
-    ),
+    data: dataRows,
     overall: result.overall.map((row) =>
       formatAggregateRow(row, baseUrl, playersByTeam),
     ),
