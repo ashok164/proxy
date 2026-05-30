@@ -554,7 +554,7 @@ const formatResultRowWithPlayers = (row, baseUrl, playersByResult = {}) => ({
   players: playersByResult[row.id] || [],
 });
 
-const formatAggregateRow = (row, baseUrl) => ({
+const formatAggregateRow = (row, baseUrl, playersByTeam = {}) => ({
   teamId: row.team_id,
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
@@ -565,7 +565,58 @@ const formatAggregateRow = (row, baseUrl) => ({
   booyahCount: Number(row.booyah_count),
   totalKills: Number(row.total_kills),
   matchesPlayed: Number(row.matches_played),
+  players: playersByTeam[row.team_id] || [],
 });
+
+const buildOverallPlayersByTeam = (rows = [], playersByResult = {}) => {
+  const playersByTeam = {};
+
+  for (const row of rows) {
+    const teamId = row.team_id;
+    if (!playersByTeam[teamId]) playersByTeam[teamId] = {};
+
+    for (const player of playersByResult[row.id] || []) {
+      const playerKey = player.player_id || player.player_name;
+      if (!playerKey) continue;
+
+      if (!playersByTeam[teamId][playerKey]) {
+        playersByTeam[teamId][playerKey] = {
+          ...player,
+          kills: 0,
+          damage: 0,
+          assists: 0,
+          knockdowns: 0,
+          survival_time: 0,
+          matchesPlayed: 0,
+          matchIds: [],
+        };
+      }
+
+      const aggregate = playersByTeam[teamId][playerKey];
+      aggregate.kills += Number(player.kills || 0);
+      aggregate.damage += Number(player.damage || 0);
+      aggregate.assists += Number(player.assists || 0);
+      aggregate.knockdowns += Number(player.knockdowns || 0);
+      aggregate.survival_time += Number(player.survival_time || 0);
+      aggregate.matchesPlayed += 1;
+      aggregate.matchIds.push(row.match_id);
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(playersByTeam).map(([teamId, players]) => [
+      teamId,
+      Object.values(players).sort(
+        (left, right) =>
+          right.kills - left.kills ||
+          right.damage - left.damage ||
+          right.assists - left.assists ||
+          right.knockdowns - left.knockdowns ||
+          left.player_name.localeCompare(right.player_name),
+      ),
+    ]),
+  );
+};
 
 const queryMatchResults = async (matchIds) => {
   const rowsResult = await pool.query(
@@ -846,6 +897,7 @@ const sendMatchResults = async (req, res, matchIds) => {
     result.rows.map((row) => row.id),
     baseUrl,
   );
+  const playersByTeam = buildOverallPlayersByTeam(result.rows, playersByResult);
 
   return res.json({
     success: true,
@@ -853,7 +905,9 @@ const sendMatchResults = async (req, res, matchIds) => {
     data: result.rows.map((row) =>
       formatResultRowWithPlayers(row, baseUrl, playersByResult),
     ),
-    overall: result.overall.map((row) => formatAggregateRow(row, baseUrl)),
+    overall: result.overall.map((row) =>
+      formatAggregateRow(row, baseUrl, playersByTeam),
+    ),
   });
 };
 
