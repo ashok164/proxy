@@ -96,7 +96,7 @@ app.get("/version", (req, res) => {
   res.json({
     success: true,
     service: "Tournament-Realtime-Data-Streamer",
-    version: "5.MVP",
+    version: "overall result player info",
     environment: process.env.NODE_ENV,
     timestamp: new Date().toISOString(),
   });

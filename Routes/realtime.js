@@ -349,7 +349,17 @@ const buildHistoricalLeaderboardIndex = async (activeMatchId) => {
   return index;
 };
 
-const buildOverallLeaderboard = async (activeMatchId, liveTeams = []) => {
+const normalizePlayersList = (players) => {
+  if (Array.isArray(players)) return players;
+  if (players && typeof players === "object") return Object.values(players);
+  return [];
+};
+
+const buildOverallLeaderboard = async (
+  activeMatchId,
+  liveTeams = [],
+  playerIndex = {},
+) => {
   const historicalIndex = await buildHistoricalLeaderboardIndex(activeMatchId);
   const liveIndex = {};
 
@@ -401,6 +411,11 @@ const buildOverallLeaderboard = async (activeMatchId, liveTeams = []) => {
     const totalKills = historical.historicalKills + live.liveKills;
     const totalPoints = historical.historicalPoints + live.livePoints;
     const liveRaw = live.liveRaw || {};
+    const players = normalizePlayersList(
+      firstValue(liveRaw.player_stats, liveRaw.playerStats),
+    );
+    const rosterPlayers = playerIndex.byTeam?.[teamId] || [];
+    const overallPlayers = players.length ? players : rosterPlayers;
 
     const leaderboardFields = {
       rank: 0,
@@ -421,10 +436,11 @@ const buildOverallLeaderboard = async (activeMatchId, liveTeams = []) => {
       totalPoints,
       matchesPlayed: historical.matchesPlayed,
       isPlaying: Boolean(liveIndex[teamId]),
-      player_stats: liveRaw.player_stats,
-      playerStats: liveRaw.playerStats,
-      player_pics: liveRaw.player_pics,
-      playerPics: liveRaw.playerPics,
+      players: overallPlayers,
+      player_stats: players,
+      playerStats: players,
+      player_pics: liveRaw.player_pics || rosterPlayers,
+      playerPics: liveRaw.playerPics || rosterPlayers,
     };
 
     if (!live.liveRaw) return leaderboardFields;
@@ -941,6 +957,7 @@ const mergeTeam = (
   if (playerStatsCamel !== undefined) {
     mergedTeam.playerStats = formatRealtimePlayerStats(playerStatsCamel, assetLookup);
   }
+  mergedTeam.players = normalizePlayersList(mergedTeam.player_stats);
 
   return mergedTeam;
 };
@@ -966,12 +983,13 @@ const buildStandings = async (id, logoCache = {}) => {
       assetLookup,
     ),
   );
-  const overallLeaderboard = await buildOverallLeaderboard(id, teams);
+  const overallLeaderboard = await buildOverallLeaderboard(id, teams, playerIndex);
 
   return {
     matchId: id,
     roomTeamMap,
     standings: teams,
+    overall: overallLeaderboard,
     overallLeaderboard,
     player_stats:
       externalPlayerStats !== undefined
