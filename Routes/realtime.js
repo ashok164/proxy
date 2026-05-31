@@ -25,7 +25,7 @@ const realtimeMetaCache = {
 };
 
 const getPushIntervalMs = () =>
-  Math.max(250, parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1000);
+  Math.max(50, parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 100);
 
 const getMetaCacheTtlMs = () =>
   Math.max(1000, parseInt(process.env.REALTIME_META_CACHE_TTL_MS, 10) || 10000);
@@ -754,6 +754,56 @@ const formatRealtimePlayerStats = (stats, assetLookup = {}) => {
   return stats;
 };
 
+const compactRealtimePlayer = (player = {}) => ({
+  account_id: firstValue(player.account_id, player.player_uid, player.playerUid, ""),
+  nickname: firstValue(player.nickname, player.player_name, player.playerName, player.name, ""),
+  player_state: firstValue(player.player_state, player.playerState, 0),
+  be_killed_time: firstValue(player.be_killed_time, player.beKilledTime, 0),
+  hp_info: {
+    current_hp: firstValue(player.hp_info?.current_hp, player.hpInfo?.currentHp, 0),
+    total_hp: firstValue(player.hp_info?.total_hp, player.hpInfo?.totalHp, 200),
+  },
+  player_image: firstValue(player.player_image, player.player_pic, player.playerPic, ""),
+  camera_link: firstValue(player.camera_link, player.cameraLink, ""),
+  character: player.character,
+  active_skill: player.active_skill || player.activeSkill,
+  weapon: player.weapon,
+  pet: player.pet,
+});
+
+const compactRealtimeTeam = (team = {}) => {
+  const players = normalizePlayersList(firstValue(team.player_stats, team.playerStats, team.players));
+
+  return {
+    team_id: firstValue(team.permanent_team_id, team.team_id, team.permanentTeamId, team.teamId, ""),
+    room_team_id: firstValue(team.room_team_id, team.roomTeamId, ""),
+    team_name: firstValue(team.team_name, team.teamName, team.name, ""),
+    short_tag: firstValue(team.short_tag, team.teamTag, team.tag, ""),
+    team_logo: firstValue(team.team_logo, team.teamLogo, ""),
+    country_logo: firstValue(team.country_logo, team.countryLogo, ""),
+    full_team_banner: firstValue(team.full_team_banner, team.fullTeamBanner, ""),
+    notification_team_banner: firstValue(
+      team.notification_team_banner,
+      team.notificationTeamBanner,
+      "",
+    ),
+    booyah_banner: firstValue(team.booyah_banner, team.booyah_image, team.booyahBanner, ""),
+    rank: firstValue(team.rank, 0),
+    killing_score: getTeamKills(team),
+    ranking_score: getTeamPlacementPoints(team),
+    live_kills: firstValue(team.liveKills, team.live_kills, getTeamKills(team)),
+    live_points: firstValue(team.livePoints, team.live_points, getTeamLivePoints(team)),
+    total_points: firstValue(team.totalPoints, team.total_points, getTeamResultScore(team)),
+    historical_kills: firstValue(team.historicalKills, team.historical_kills, 0),
+    historical_points: firstValue(team.historicalPoints, team.historical_points, 0),
+    matches_played: firstValue(team.matchesPlayed, team.matches_played, 0),
+    is_playing: firstValue(team.isPlaying, team.is_playing, players.length > 0),
+    is_eliminated: Boolean(team.is_eliminated),
+    mapping_matched: Boolean(team.mappingMatched || team.mapping_matched),
+    player_stats: players.map(compactRealtimePlayer),
+  };
+};
+
 const normalizePlayerUidKey = (value) => String(value ?? "").trim();
 
 const buildPlayerIndex = async () => {
@@ -981,6 +1031,14 @@ const mergeTeam = (
       ? team.playerPics
       : [];
   const mergedPlayerPics = playerPics.length ? playerPics : teamPlayerPics;
+  const playerPicByUid = new Map(
+    mergedPlayerPics
+      .map((pic) => [
+        String(firstValue(pic.player_uid, pic.playerUid, pic.account_id, "")),
+        pic,
+      ])
+      .filter(([uid]) => uid),
+  );
   const teamPlayerStats =
     team.player_stats !== undefined
       ? team.player_stats
@@ -1028,10 +1086,8 @@ const mergeTeam = (
     playerPics: mergedPlayerPics,
 
     player_stats: (team?.player_stats || []).map((stat) => {
-      const matchedPlayer = mergedPlayerPics.find(
-        (pic) =>
-          String(pic.player_uid || pic.playerUid) ===
-          String(stat.account_id || stat.player_uid || stat.playerUid),
+      const matchedPlayer = playerPicByUid.get(
+        String(firstValue(stat.account_id, stat.player_uid, stat.playerUid, "")),
       );
 
       return {
@@ -1121,10 +1177,16 @@ const buildStandings = async (id, logoCache = {}) => {
     playerIndex,
     bannerIndex,
   );
+  const liveStandings = teams.map(compactRealtimeTeam);
+  const liveOverall = overallLeaderboard.map(compactRealtimeTeam);
 
   return {
+    success: true,
     matchId: id,
+    schema: "realtime.v2",
     roomTeamMap,
+    liveStandings2: liveStandings,
+    liveOverall,
     standings: teams,
     overall: overallLeaderboard,
     overallLeaderboard,
@@ -1137,6 +1199,15 @@ const buildStandings = async (id, logoCache = {}) => {
         : undefined,
   };
 };
+
+const buildLiveBroadcastPayload = (standings = {}) => ({
+  success: true,
+  schema: standings.schema || "realtime.v2",
+  matchId: standings.matchId,
+  roomTeamMap: standings.roomTeamMap || {},
+  liveStandings2: standings.liveStandings2 || [],
+  liveOverall: standings.liveOverall || [],
+});
 
 const getRealtimeMeta = async () => {
   const now = Date.now();
@@ -1215,7 +1286,7 @@ const startCentralEngine = (matchId) => {
 
       const jsonString = JSON.stringify({
         type: "tablestandings",
-        data: standings,
+        data: buildLiveBroadcastPayload(standings),
       });
       entry.latestFrame = frameWSFrame(jsonString);
 
@@ -1377,7 +1448,7 @@ router.get(
         matchCache[matchId].latestFrame = frameWSFrame(
           JSON.stringify({
             type: "tablestandings",
-            data: standingsData,
+            data: buildLiveBroadcastPayload(standingsData),
           }),
         );
       }
