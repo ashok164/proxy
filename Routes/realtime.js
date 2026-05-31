@@ -436,6 +436,7 @@ const buildOverallLeaderboard = async (
   activeMatchId,
   liveTeams = [],
   playerIndex = {},
+  bannerIndex = {},
 ) => {
   const historicalIndex = await buildHistoricalLeaderboardIndex(activeMatchId);
   const liveIndex = {};
@@ -508,8 +509,9 @@ const buildOverallLeaderboard = async (
       teamTag: live.teamTag || historical.teamTag,
       teamLogo: live.teamLogo || historical.teamLogo,
       countryLogo: live.countryLogo || historical.countryLogo,
-      fullTeamBanner: live.fullTeamBanner || "",
-      notificationTeamBanner: live.notificationTeamBanner || "",
+      fullTeamBanner: live.fullTeamBanner || bannerIndex[teamId]?.fullTeamBanner || "",
+      notificationTeamBanner:
+        live.notificationTeamBanner || bannerIndex[teamId]?.notificationTeamBanner || "",
       booyahBanner: live.booyahBanner || live.booyahImage || "",
       booyahImage: live.booyahImage || live.booyahBanner || "",
       historicalKills: historical.historicalKills,
@@ -1103,7 +1105,12 @@ const buildStandings = async (id, logoCache = {}) => {
       booyahAssetImage,
     ),
   );
-  const overallLeaderboard = await buildOverallLeaderboard(id, teams, playerIndex);
+  const overallLeaderboard = await buildOverallLeaderboard(
+    id,
+    teams,
+    playerIndex,
+    bannerIndex,
+  );
 
   return {
     matchId: id,

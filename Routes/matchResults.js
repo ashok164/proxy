@@ -242,6 +242,55 @@ const getBooyahAssetImage = async (baseUrl) => {
   }
 };
 
+const addBannerToIndex = (index, row, key, baseUrl) => {
+  const teamId = normalizeTeamId(row.team_id);
+  if (!teamId || !row.image_url) return;
+
+  if (!index[teamId]) index[teamId] = {};
+  if (index[teamId][key]) return;
+  index[teamId][key] = formatImageUrl(baseUrl, row.image_url);
+};
+
+const buildTeamBannerIndex = async (baseUrl) => {
+  const index = {};
+
+  try {
+    const fullBannerResult = await pool.query(`
+      SELECT team_id, image_url
+      FROM full_team_banners
+      WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+      ORDER BY id DESC
+    `);
+
+    for (const row of fullBannerResult.rows) {
+      addBannerToIndex(index, row, "fullTeamBanner", baseUrl);
+    }
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      console.error("Full team banner lookup failed:", err.message);
+    }
+  }
+
+  try {
+    const notificationBannerResult = await pool.query(`
+      SELECT team_id, image_url
+      FROM notification_team_banners
+      WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+      ORDER BY id DESC
+    `);
+
+    for (const row of notificationBannerResult.rows) {
+      addBannerToIndex(index, row, "notificationTeamBanner", baseUrl);
+    }
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      console.error("Notification team banner lookup failed:", err.message);
+    }
+  }
+
+  return index;
+};
+
 let matchResultsTableReady = false;
 
 const ensureMatchResultsTable = async () => {
@@ -564,7 +613,20 @@ const saveRealtimeResultsForMatch = async (matchId) => {
 const getBooyahImageForCount = (booyahCount, booyahAssetImage) =>
   Number(booyahCount) > 0 ? booyahAssetImage : "";
 
-const formatResultRow = (row, baseUrl, booyahAssetImage = "") => ({
+const getTeamBanners = (bannerIndex, teamId) =>
+  bannerIndex[normalizeTeamId(teamId)] || {};
+
+const formatResultRow = (
+  row,
+  baseUrl,
+  booyahAssetImage = "",
+  bannerIndex = {},
+) => {
+  const teamBanners = getTeamBanners(bannerIndex, row.team_id);
+  const fullTeamBanner = teamBanners.fullTeamBanner || "";
+  const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
+
+  return {
   id: row.id,
   matchId: row.match_id,
   teamId: row.team_id,
@@ -577,24 +639,41 @@ const formatResultRow = (row, baseUrl, booyahAssetImage = "") => ({
   booyahCount: row.booyah_count,
   booyah_banner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
   booyah_image: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  full_team_banner: fullTeamBanner,
+  notification_team_banner: notificationTeamBanner,
   booyahBanner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
   booyahImage: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  fullTeamBanner,
+  notificationTeamBanner,
   totalKills: row.total_kills,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
-});
+  };
+};
 
 const formatResultRowWithPlayers = (
   row,
   baseUrl,
   playersByResult = {},
   booyahAssetImage = "",
+  bannerIndex = {},
 ) => ({
-  ...formatResultRow(row, baseUrl, booyahAssetImage),
+  ...formatResultRow(row, baseUrl, booyahAssetImage, bannerIndex),
   players: playersByResult[row.id] || [],
 });
 
-const formatAggregateRow = (row, baseUrl, playersByTeam = {}, booyahAssetImage = "") => ({
+const formatAggregateRow = (
+  row,
+  baseUrl,
+  playersByTeam = {},
+  booyahAssetImage = "",
+  bannerIndex = {},
+) => {
+  const teamBanners = getTeamBanners(bannerIndex, row.team_id);
+  const fullTeamBanner = teamBanners.fullTeamBanner || "";
+  const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
+
+  return {
   teamId: row.team_id,
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
@@ -605,12 +684,17 @@ const formatAggregateRow = (row, baseUrl, playersByTeam = {}, booyahAssetImage =
   booyahCount: Number(row.booyah_count),
   booyah_banner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
   booyah_image: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  full_team_banner: fullTeamBanner,
+  notification_team_banner: notificationTeamBanner,
   booyahBanner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
   booyahImage: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  fullTeamBanner,
+  notificationTeamBanner,
   totalKills: Number(row.total_kills),
   matchesPlayed: Number(row.matches_played),
   players: playersByTeam[row.team_id] || [],
-});
+  };
+};
 
 const buildOverallPlayersByTeam = (rows = []) => {
   const playersByTeam = {};
@@ -819,12 +903,13 @@ router.post("/create", async (req, res) => {
       baseUrl,
     );
     const booyahAssetImage = await getBooyahAssetImage(baseUrl);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl);
 
     return res.json({
       success: true,
       message: "Match results saved successfully",
       data: savedRows.map((row) =>
-        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
+        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage, bannerIndex),
       ),
     });
   } catch (err) {
@@ -853,6 +938,7 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       baseUrl,
     );
     const booyahAssetImage = await getBooyahAssetImage(baseUrl);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl);
 
     return res.json({
       success: true,
@@ -862,7 +948,7 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       finalDetected: result.finalDetected,
       skippedRows: result.skippedRows,
       data: result.savedRows.map((row) =>
-        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
+        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage, bannerIndex),
       ),
     });
   } catch (err) {
@@ -910,6 +996,7 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
       baseUrl,
     );
     const booyahAssetImage = await getBooyahAssetImage(baseUrl);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl);
 
     return res.json({
       success: true,
@@ -918,7 +1005,7 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
       matches: matchSummaries,
       skippedRows,
       data: savedRows.map((row) =>
-        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
+        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage, bannerIndex),
       ),
     });
   } catch (err) {
@@ -939,6 +1026,7 @@ const sendMatchResults = async (req, res, matchIds) => {
 
   const baseUrl = getBaseUrl(req);
   const booyahAssetImage = await getBooyahAssetImage(baseUrl);
+  const bannerIndex = await buildTeamBannerIndex(baseUrl);
   const result = await queryMatchResults(matchIds);
   const playersByResult = await loadPlayersForMatchResults(
     pool,
@@ -946,7 +1034,7 @@ const sendMatchResults = async (req, res, matchIds) => {
     baseUrl,
   );
   const dataRows = result.rows.map((row) =>
-    formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
+    formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage, bannerIndex),
   );
   const playersByTeam = buildOverallPlayersByTeam(dataRows);
 
@@ -955,13 +1043,14 @@ const sendMatchResults = async (req, res, matchIds) => {
     matchIds,
     data: dataRows,
     overall: result.overall.map((row) =>
-      formatAggregateRow(row, baseUrl, playersByTeam, booyahAssetImage),
+      formatAggregateRow(row, baseUrl, playersByTeam, booyahAssetImage, bannerIndex),
     ),
   });
 };
 
 const getFullMatchRows = async (matchIds, baseUrl) => {
   const booyahAssetImage = await getBooyahAssetImage(baseUrl);
+  const bannerIndex = await buildTeamBannerIndex(baseUrl);
   const result = await queryMatchResults(matchIds);
   const playersByResult = await loadPlayersForMatchResults(
     pool,
@@ -970,7 +1059,7 @@ const getFullMatchRows = async (matchIds, baseUrl) => {
   );
 
   return result.rows.map((row) =>
-    formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
+    formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage, bannerIndex),
   );
 };
 
@@ -1169,10 +1258,14 @@ router.get("/booyah-result/:id", async (req, res) => {
       [result.rows[0].id],
       baseUrl,
     );
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl);
     const team = formatResultRowWithPlayers(
       result.rows[0],
       baseUrl,
       playersByResult,
+      booyahAssetImage,
+      bannerIndex,
     );
 
     return res.json({
@@ -1182,8 +1275,12 @@ router.get("/booyah-result/:id", async (req, res) => {
         team_name: team.teamName,
         team_logo: team.teamLogo,
         country_logo: team.countryLogo,
+        full_team_banner: team.fullTeamBanner,
+        notification_team_banner: team.notificationTeamBanner,
         booyah_banner: team.booyahBanner,
         booyah_image: team.booyahImage,
+        fullTeamBanner: team.fullTeamBanner,
+        notificationTeamBanner: team.notificationTeamBanner,
         placement: 1,
         players: team.players,
       },
