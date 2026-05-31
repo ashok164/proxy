@@ -19,6 +19,16 @@ const TARGET_IP = process.env.VPS_IP || "82.29.155.252";
 
 // ⚡ Global In-Memory RAM Cache to guarantee 0ms instant browser delivery
 const matchCache = {};
+const realtimeMetaCache = {
+  data: null,
+  expiresAt: 0,
+};
+
+const getPushIntervalMs = () =>
+  Math.max(250, parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1000);
+
+const getMetaCacheTtlMs = () =>
+  Math.max(1000, parseInt(process.env.REALTIME_META_CACHE_TTL_MS, 10) || 10000);
 
 const checkLocalIpAvailability = (targetIp) => {
   const interfaces = os.networkInterfaces();
@@ -1082,15 +1092,15 @@ const mergeTeam = (
 
 const buildStandings = async (id, logoCache = {}) => {
   const data = await fetchMatch(id);
-  const metaIndex = await buildTeamMetaIndex();
+  const meta = await getRealtimeMeta();
   const roomTeamMap = await buildRoomTeamMappingIndex(id);
-  const playerIndex = await buildPlayerIndex();
-  const bannerIndex = await buildTeamBannerIndex();
-  const booyahAssetImage = await getBooyahAssetImage();
-  const assetLookup = await buildAssetLookup(
-    pool,
-    process.env.BASE_URL || "http://82.29.155.252:3000",
-  );
+  const {
+    metaIndex,
+    playerIndex,
+    bannerIndex,
+    booyahAssetImage,
+    assetLookup,
+  } = meta;
   const externalPlayerStats = getPlayerStats(data);
   const teams = getTeams(data).map((team) =>
     mergeTeam(
@@ -1128,6 +1138,40 @@ const buildStandings = async (id, logoCache = {}) => {
   };
 };
 
+const getRealtimeMeta = async () => {
+  const now = Date.now();
+  if (realtimeMetaCache.data && realtimeMetaCache.expiresAt > now) {
+    return realtimeMetaCache.data;
+  }
+
+  if (realtimeMetaCache.promise) return realtimeMetaCache.promise;
+
+  realtimeMetaCache.promise = Promise.all([
+    buildTeamMetaIndex(),
+    buildPlayerIndex(),
+    buildTeamBannerIndex(),
+    getBooyahAssetImage(),
+    buildAssetLookup(pool, process.env.BASE_URL || "http://82.29.155.252:3000"),
+  ])
+    .then(([metaIndex, playerIndex, bannerIndex, booyahAssetImage, assetLookup]) => {
+      const data = {
+        metaIndex,
+        playerIndex,
+        bannerIndex,
+        booyahAssetImage,
+        assetLookup,
+      };
+      realtimeMetaCache.data = data;
+      realtimeMetaCache.expiresAt = Date.now() + getMetaCacheTtlMs();
+      return data;
+    })
+    .finally(() => {
+      realtimeMetaCache.promise = null;
+    });
+
+  return realtimeMetaCache.promise;
+};
+
 /* ================= CENTRAL DATA STREAM ENGINE ================= */
 const startCentralEngine = (matchId) => {
   if (!matchCache[matchId]) {
@@ -1136,14 +1180,15 @@ const startCentralEngine = (matchId) => {
       rawJsonData: null,
       latestFrame: null,
       logoCache: {},
-      intervalId: null,
+      timerId: null,
+      refreshing: false,
       lastActive: Date.now(),
       resultSaved: false,
       resultSaveInFlight: false,
     };
   }
 
-  if (matchCache[matchId].intervalId) return;
+  if (matchCache[matchId].timerId || matchCache[matchId].refreshing) return;
 
   console.log(
     `🌀 [ENGINE START] Initializing centralized data worker loop for Match ID: ${matchId}`,
@@ -1156,10 +1201,13 @@ const startCentralEngine = (matchId) => {
       console.log(
         `💤 [ENGINE SLEEP] Suspending central worker loop for inactive Match ID: ${matchId}`,
       );
-      clearInterval(entry.intervalId);
-      entry.intervalId = null;
+      if (entry.timerId) clearTimeout(entry.timerId);
+      entry.timerId = null;
       return;
     }
+
+    entry.refreshing = true;
+    entry.timerId = null;
 
     try {
       const standings = await buildStandings(matchId, entry.logoCache);
@@ -1181,14 +1229,12 @@ const startCentralEngine = (matchId) => {
         `❌ Central Worker Loop Error [Match ID: ${matchId}]:`,
         err.message,
       );
+    } finally {
+      entry.refreshing = false;
+      entry.timerId = setTimeout(tick, getPushIntervalMs());
     }
   };
 
-  const intervalDuration = Math.max(
-    1000,
-    parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 1500,
-  );
-  matchCache[matchId].intervalId = setInterval(tick, intervalDuration);
   tick();
 };
 
@@ -1326,6 +1372,15 @@ router.get(
         matchId,
         matchCache[matchId]?.logoCache || {},
       );
+      if (matchCache[matchId]) {
+        matchCache[matchId].rawJsonData = standingsData;
+        matchCache[matchId].latestFrame = frameWSFrame(
+          JSON.stringify({
+            type: "tablestandings",
+            data: standingsData,
+          }),
+        );
+      }
       return res.json({
         success: true,
         type: "tablestandings_static",
