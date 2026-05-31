@@ -179,7 +179,11 @@ const getRealtimeTotalScore = (team = {}) => {
 };
 
 const hasRealtimeBooyah = (team = {}) => {
-  const value = firstValue(
+  const values = [
+    team.booyah_count,
+    team.booyahCount,
+    team.booyah_counter,
+    team.booyahCounter,
     team.booyah,
     team.is_booyah,
     team.isBooyah,
@@ -188,12 +192,14 @@ const hasRealtimeBooyah = (team = {}) => {
     team.winner,
     team.isWinner,
     team.is_winner,
-  );
+  ];
 
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
-  const clean = String(value ?? "").trim().toLowerCase();
-  return ["true", "1", "yes", "y", "win", "winner", "booyah"].includes(clean);
+  return values.some((value) => {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value === 1;
+    const clean = String(value ?? "").trim().toLowerCase();
+    return ["true", "1", "yes", "y", "win", "winner", "booyah"].includes(clean);
+  });
 };
 
 const isRealtimeFinal = (team = {}) => {
@@ -212,6 +218,28 @@ const formatImageUrl = (baseUrl, logoPath) => {
   }
 
   return `${baseUrl}/uploads/${logoPath.replace(/^\/?uploads\//i, "")}`;
+};
+
+const getBooyahAssetImage = async (baseUrl) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT image_url
+      FROM tournament_assets
+      WHERE asset_id = $1 AND active = true
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      ["1"],
+    );
+
+    return formatImageUrl(baseUrl, result.rows[0]?.image_url || "");
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      console.error("Booyah tournament asset lookup failed:", err.message);
+    }
+    return "";
+  }
 };
 
 let matchResultsTableReady = false;
@@ -533,7 +561,10 @@ const saveRealtimeResultsForMatch = async (matchId) => {
   };
 };
 
-const formatResultRow = (row, baseUrl) => ({
+const getBooyahImageForCount = (booyahCount, booyahAssetImage) =>
+  Number(booyahCount) > 0 ? booyahAssetImage : "";
+
+const formatResultRow = (row, baseUrl, booyahAssetImage = "") => ({
   id: row.id,
   matchId: row.match_id,
   teamId: row.team_id,
@@ -544,17 +575,26 @@ const formatResultRow = (row, baseUrl) => ({
   kills: row.kills,
   placement: row.placement,
   booyahCount: row.booyah_count,
+  booyah_banner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyah_image: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahBanner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahImage: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
   totalKills: row.total_kills,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
 
-const formatResultRowWithPlayers = (row, baseUrl, playersByResult = {}) => ({
-  ...formatResultRow(row, baseUrl),
+const formatResultRowWithPlayers = (
+  row,
+  baseUrl,
+  playersByResult = {},
+  booyahAssetImage = "",
+) => ({
+  ...formatResultRow(row, baseUrl, booyahAssetImage),
   players: playersByResult[row.id] || [],
 });
 
-const formatAggregateRow = (row, baseUrl, playersByTeam = {}) => ({
+const formatAggregateRow = (row, baseUrl, playersByTeam = {}, booyahAssetImage = "") => ({
   teamId: row.team_id,
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
@@ -563,6 +603,10 @@ const formatAggregateRow = (row, baseUrl, playersByTeam = {}) => ({
   kills: Number(row.kills),
   placement: Number(row.placement),
   booyahCount: Number(row.booyah_count),
+  booyah_banner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyah_image: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahBanner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahImage: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
   totalKills: Number(row.total_kills),
   matchesPlayed: Number(row.matches_played),
   players: playersByTeam[row.team_id] || [],
@@ -774,12 +818,13 @@ router.post("/create", async (req, res) => {
       savedRows.map((row) => row.id),
       baseUrl,
     );
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
 
     return res.json({
       success: true,
       message: "Match results saved successfully",
       data: savedRows.map((row) =>
-        formatResultRowWithPlayers(row, baseUrl, playersByResult),
+        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
       ),
     });
   } catch (err) {
@@ -807,6 +852,7 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       result.savedRows.map((row) => row.id),
       baseUrl,
     );
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
 
     return res.json({
       success: true,
@@ -816,7 +862,7 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       finalDetected: result.finalDetected,
       skippedRows: result.skippedRows,
       data: result.savedRows.map((row) =>
-        formatResultRowWithPlayers(row, baseUrl, playersByResult),
+        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
       ),
     });
   } catch (err) {
@@ -863,6 +909,7 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
       savedRows.map((row) => row.id),
       baseUrl,
     );
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
 
     return res.json({
       success: true,
@@ -871,7 +918,7 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
       matches: matchSummaries,
       skippedRows,
       data: savedRows.map((row) =>
-        formatResultRowWithPlayers(row, baseUrl, playersByResult),
+        formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
       ),
     });
   } catch (err) {
@@ -891,6 +938,7 @@ const sendMatchResults = async (req, res, matchIds) => {
   }
 
   const baseUrl = getBaseUrl(req);
+  const booyahAssetImage = await getBooyahAssetImage(baseUrl);
   const result = await queryMatchResults(matchIds);
   const playersByResult = await loadPlayersForMatchResults(
     pool,
@@ -898,7 +946,7 @@ const sendMatchResults = async (req, res, matchIds) => {
     baseUrl,
   );
   const dataRows = result.rows.map((row) =>
-    formatResultRowWithPlayers(row, baseUrl, playersByResult),
+    formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
   );
   const playersByTeam = buildOverallPlayersByTeam(dataRows);
 
@@ -907,12 +955,13 @@ const sendMatchResults = async (req, res, matchIds) => {
     matchIds,
     data: dataRows,
     overall: result.overall.map((row) =>
-      formatAggregateRow(row, baseUrl, playersByTeam),
+      formatAggregateRow(row, baseUrl, playersByTeam, booyahAssetImage),
     ),
   });
 };
 
 const getFullMatchRows = async (matchIds, baseUrl) => {
+  const booyahAssetImage = await getBooyahAssetImage(baseUrl);
   const result = await queryMatchResults(matchIds);
   const playersByResult = await loadPlayersForMatchResults(
     pool,
@@ -921,7 +970,7 @@ const getFullMatchRows = async (matchIds, baseUrl) => {
   );
 
   return result.rows.map((row) =>
-    formatResultRowWithPlayers(row, baseUrl, playersByResult),
+    formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage),
   );
 };
 
@@ -1009,6 +1058,8 @@ router.get("/team-stats/:matchId", async (req, res) => {
         teamTag: team.teamTag,
         teamLogo: team.teamLogo,
         countryLogo: team.countryLogo,
+        booyahBanner: team.booyahBanner,
+        booyahImage: team.booyahImage,
         kills: team.kills,
         placement: team.placement,
         booyahCount: team.booyahCount,
@@ -1068,6 +1119,8 @@ router.get("/booyah/:matchId", async (req, res) => {
         team_name: team.teamName,
         team_logo: team.teamLogo,
         country_logo: team.countryLogo,
+        booyah_banner: team.booyahBanner,
+        booyah_image: team.booyahImage,
         placement: 1,
         players: team.players,
       })),
@@ -1129,6 +1182,8 @@ router.get("/booyah-result/:id", async (req, res) => {
         team_name: team.teamName,
         team_logo: team.teamLogo,
         country_logo: team.countryLogo,
+        booyah_banner: team.booyahBanner,
+        booyah_image: team.booyahImage,
         placement: 1,
         players: team.players,
       },

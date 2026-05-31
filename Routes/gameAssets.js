@@ -38,6 +38,26 @@ const ASSET_MODULES = {
     singular: "Equipment",
     plural: "Equipment",
   },
+  tournamentLogo: {
+    table: "tournament_logos",
+    singular: "Tournament logo",
+    plural: "Tournament logos",
+  },
+  fullTeamBanner: {
+    table: "full_team_banners",
+    singular: "Full team banner",
+    plural: "Full team banners",
+  },
+  notificationTeamBanner: {
+    table: "notification_team_banners",
+    singular: "Notification team banner",
+    plural: "Notification team banners",
+  },
+  tournamentAssets: {
+    table: "tournament_assets",
+    singular: "Tournament asset",
+    plural: "Tournament assets",
+  },
 };
 
 const uploadRoot = path.join(__dirname, "../uploads");
@@ -107,6 +127,23 @@ const toNullableString = (value) => {
   return clean === "" ? null : clean;
 };
 
+const toBoolean = (value) => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+
+  const clean = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(clean)) return true;
+  if (["false", "0", "no", "off"].includes(clean)) return false;
+
+  return undefined;
+};
+
+const toBooleanOrDefault = (value, defaultValue) => {
+  const parsed = toBoolean(value);
+  return parsed === undefined ? defaultValue : parsed;
+};
+
 const getBodyValue = (body, ...names) => {
   for (const name of names) {
     if (body[name] !== undefined) return body[name];
@@ -146,7 +183,7 @@ const parseItemsPayload = (body = {}) => {
 
   for (const [key, value] of Object.entries(body)) {
     const match = key.match(
-      /^items\[(\d+)\]\[(name|code|asset_id|assetId|description|fileName|filename)\]$/i,
+      /^items\[(\d+)\]\[(team_id|teamId|name|code|asset_id|assetId|description|active|fileName|filename)\]$/i,
     );
     if (!match) continue;
 
@@ -217,6 +254,12 @@ const getItemInputAt = (body, items, file, index) => {
   const item = getItemForFile(items, file, index);
 
   return {
+    teamId: firstValue(
+      item.team_id,
+      item.teamId,
+      getBodyValue(item, "team_id", "teamId"),
+      getArrayValue(body, ["team_id", "teamId"], index),
+    ),
     assetId: firstValue(
       item.code,
       item.asset_id,
@@ -234,6 +277,11 @@ const getItemInputAt = (body, items, file, index) => {
       getBodyValue(item, "description"),
       getArrayValue(body, ["description"], index),
     ),
+    active: firstValue(
+      item.active,
+      getBodyValue(item, "active"),
+      getArrayValue(body, ["active"], index),
+    ),
   };
 };
 
@@ -241,6 +289,12 @@ const getSingleItemInput = (body) => {
   const item = parseItemsPayload(body)[0] || {};
 
   return {
+    teamId: firstValue(
+      item.team_id,
+      item.teamId,
+      getBodyValue(item, "team_id", "teamId"),
+      getBodyValue(body, "team_id", "teamId"),
+    ),
     assetId: firstValue(
       item.code,
       item.asset_id,
@@ -258,15 +312,35 @@ const getSingleItemInput = (body) => {
       getBodyValue(item, "description"),
       getBodyValue(body, "description"),
     ),
+    active: firstValue(
+      item.active,
+      getBodyValue(item, "active"),
+      getBodyValue(body, "active"),
+    ),
   };
 };
 
-const formatRow = (row) => ({
+const getBaseUrl = (req) => `${req.protocol}://${req.get("host")}`;
+
+const toPublicUploadUrl = (req, imageUrl) => {
+  if (!imageUrl) return imageUrl;
+  if (/^https?:\/\//i.test(imageUrl)) return imageUrl;
+
+  const cleanPath = String(imageUrl)
+    .replace(/^\/+/, "")
+    .replace(/\\/g, "/");
+
+  return `${getBaseUrl(req)}/${cleanPath}`;
+};
+
+const formatRow = (req, row) => ({
   id: row.id,
+  team_id: row.team_id,
   asset_id: row.asset_id,
   name: row.name,
   description: row.description,
-  image_url: row.image_url,
+  active: row.active,
+  image_url: toPublicUploadUrl(req, row.image_url),
   file_name: row.file_name,
   created_at: row.created_at,
   updated_at: row.updated_at,
@@ -348,26 +422,30 @@ router.post("/:moduleName/create", uploadAny, async (req, res) => {
       const result = await pool.query(
         `
         INSERT INTO ${config.table} (
+          team_id,
           asset_id,
           name,
           description,
+          active,
           image_url,
           file_name,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
         RETURNING *
         `,
         [
+          toNullableString(input.teamId),
           toNullableString(input.assetId),
           toNullableString(input.name),
           toNullableString(input.description),
+          toBooleanOrDefault(input.active, true),
           imageUrl,
           file.originalname,
         ],
       );
 
-      rows.push(formatRow(result.rows[0]));
+      rows.push(formatRow(req, result.rows[0]));
     }
 
     await pool.query("COMMIT");
@@ -397,7 +475,7 @@ router.get("/:moduleName/all", async (req, res) => {
 
     return res.json({
       success: true,
-      data: result.rows.map(formatRow),
+      data: result.rows.map((row) => formatRow(req, row)),
     });
   } catch (err) {
     console.error(`${config.plural} fetch failed:`, err);
@@ -435,22 +513,28 @@ router.put("/:moduleName/update/:id", uploadAny, async (req, res) => {
       UPDATE ${config.table}
       SET
         asset_id = $1,
-        name = $2,
-        description = $3,
-        image_url = $4,
-        file_name = $5,
+        team_id = $2,
+        name = $3,
+        description = $4,
+        active = $5,
+        image_url = $6,
+        file_name = $7,
         updated_at = NOW()
-      WHERE id = $6
+      WHERE id = $8
       RETURNING *
       `,
       [
         input.assetId !== undefined
           ? toNullableString(input.assetId)
           : existing.asset_id,
+        input.teamId !== undefined
+          ? toNullableString(input.teamId)
+          : existing.team_id,
         input.name !== undefined ? toNullableString(input.name) : existing.name,
         input.description !== undefined
           ? toNullableString(input.description)
           : existing.description,
+        toBooleanOrDefault(input.active, existing.active),
         imageUrl,
         newImage ? newImage.originalname : existing.file_name,
         id,
@@ -465,7 +549,7 @@ router.put("/:moduleName/update/:id", uploadAny, async (req, res) => {
     return res.json({
       success: true,
       message: `${config.singular} updated successfully`,
-      data: formatRow(result.rows[0]),
+      data: formatRow(req, result.rows[0]),
     });
   } catch (err) {
     deleteUploadedFiles(files);
@@ -496,7 +580,7 @@ router.delete("/:moduleName/delete/:id", async (req, res) => {
     return res.json({
       success: true,
       message: `${config.singular} deleted successfully`,
-      data: formatRow(deletedRow),
+      data: formatRow(req, deletedRow),
     });
   } catch (err) {
     console.error(`${config.singular} delete failed:`, err);

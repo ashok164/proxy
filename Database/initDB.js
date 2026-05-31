@@ -47,13 +47,19 @@ const initDB = async () => {
       "pets",
       "roles",
       "equipment",
+      "tournament_logos",
+      "full_team_banners",
+      "notification_team_banners",
+      "tournament_assets",
     ]) {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS ${table} (
           id SERIAL PRIMARY KEY,
+          team_id TEXT,
           asset_id TEXT,
           name TEXT,
           description TEXT,
+          active BOOLEAN NOT NULL DEFAULT true,
           image_url TEXT,
           file_name TEXT,
           created_at TIMESTAMP DEFAULT NOW(),
@@ -92,6 +98,16 @@ const initDB = async () => {
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW(),
         CONSTRAINT circle_analysis_single_row CHECK (id = 1)
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS zone_shrink_state (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        active BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT zone_shrink_state_single_row CHECK (id = 1)
       );
     `);
 
@@ -270,6 +286,29 @@ const initDB = async () => {
       ADD COLUMN IF NOT EXISTS camera_link TEXT;
     `);
 
+    for (const table of [
+      "weapons",
+      "characters",
+      "skills",
+      "pets",
+      "roles",
+      "equipment",
+      "tournament_logos",
+      "full_team_banners",
+      "notification_team_banners",
+      "tournament_assets",
+    ]) {
+      await pool.query(`
+        ALTER TABLE ${table}
+        ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;
+      `);
+
+      await pool.query(`
+        ALTER TABLE ${table}
+        ADD COLUMN IF NOT EXISTS team_id TEXT;
+      `);
+    }
+
     await pool.query(`
       INSERT INTO theme_colors (id)
       VALUES (1)
@@ -278,6 +317,12 @@ const initDB = async () => {
 
     await pool.query(`
       INSERT INTO circle_analysis (id)
+      VALUES (1)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+
+    await pool.query(`
+      INSERT INTO zone_shrink_state (id)
       VALUES (1)
       ON CONFLICT (id) DO NOTHING;
     `);

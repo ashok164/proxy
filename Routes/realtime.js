@@ -189,7 +189,11 @@ const getTeamResultScore = (team = {}) => {
 };
 
 const hasTeamBooyah = (team = {}) => {
-  const value = firstValue(
+  const values = [
+    team.booyah_count,
+    team.booyahCount,
+    team.booyah_counter,
+    team.booyahCounter,
     team.booyah,
     team.is_booyah,
     team.isBooyah,
@@ -198,13 +202,15 @@ const hasTeamBooyah = (team = {}) => {
     team.winner,
     team.isWinner,
     team.is_winner,
-  );
+  ];
 
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
+  return values.some((value) => {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value === 1;
 
-  const clean = String(value ?? "").trim().toLowerCase();
-  return ["true", "1", "yes", "y", "win", "winner", "booyah"].includes(clean);
+    const clean = String(value ?? "").trim().toLowerCase();
+    return ["true", "1", "yes", "y", "win", "winner", "booyah"].includes(clean);
+  });
 };
 
 const isFinalTeamResult = (team = {}) => {
@@ -259,6 +265,77 @@ const buildTeamMetaIndex = async () => {
     }
   } catch (err) {
     console.error("DB team metadata lookup failed:", err.message);
+  }
+
+  return index;
+};
+
+const getBooyahAssetImage = async () => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT image_url
+      FROM tournament_assets
+      WHERE asset_id = $1 AND active = true
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      ["1"],
+    );
+
+    return formatUploadUri(result.rows[0]?.image_url || "");
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      console.error("Booyah tournament asset lookup failed:", err.message);
+    }
+    return "";
+  }
+};
+
+const addBannerToIndex = (index, row, key) => {
+  const teamIdKey = normalizeTeamIdKey(row.team_id);
+  if (!teamIdKey || !row.image_url) return;
+
+  if (!index[teamIdKey]) index[teamIdKey] = {};
+  if (index[teamIdKey][key]) return;
+  index[teamIdKey][key] = formatUploadUri(row.image_url);
+};
+
+const buildTeamBannerIndex = async () => {
+  const index = {};
+
+  try {
+    const fullBannerResult = await pool.query(`
+      SELECT team_id, image_url
+      FROM full_team_banners
+      WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+      ORDER BY id DESC
+    `);
+
+    for (const row of fullBannerResult.rows) {
+      addBannerToIndex(index, row, "fullTeamBanner");
+    }
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      console.error("Full team banner lookup failed:", err.message);
+    }
+  }
+
+  try {
+    const notificationBannerResult = await pool.query(`
+      SELECT team_id, image_url
+      FROM notification_team_banners
+      WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+      ORDER BY id DESC
+    `);
+
+    for (const row of notificationBannerResult.rows) {
+      addBannerToIndex(index, row, "notificationTeamBanner");
+    }
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      console.error("Notification team banner lookup failed:", err.message);
+    }
   }
 
   return index;
@@ -378,6 +455,11 @@ const buildOverallLeaderboard = async (
       teamTag: getTeamTag(team) || "",
       teamLogo: team.teamLogo || team.team_logo || "",
       countryLogo: team.countryLogo || team.country_logo || "",
+      fullTeamBanner: team.fullTeamBanner || team.full_team_banner || "",
+      notificationTeamBanner:
+        team.notificationTeamBanner || team.notification_team_banner || "",
+      booyahBanner: team.booyahBanner || team.booyah_banner || "",
+      booyahImage: team.booyahImage || team.booyah_image || "",
     };
   }
 
@@ -426,6 +508,10 @@ const buildOverallLeaderboard = async (
       teamTag: live.teamTag || historical.teamTag,
       teamLogo: live.teamLogo || historical.teamLogo,
       countryLogo: live.countryLogo || historical.countryLogo,
+      fullTeamBanner: live.fullTeamBanner || "",
+      notificationTeamBanner: live.notificationTeamBanner || "",
+      booyahBanner: live.booyahBanner || live.booyahImage || "",
+      booyahImage: live.booyahImage || live.booyahBanner || "",
       historicalKills: historical.historicalKills,
       historicalPlacement: historical.historicalPlacement,
       historicalBooyahCount: historical.historicalBooyahCount,
@@ -458,9 +544,17 @@ const buildOverallLeaderboard = async (
       short_tag: leaderboardFields.teamTag,
       team_logo: leaderboardFields.teamLogo,
       country_logo: leaderboardFields.countryLogo,
+      full_team_banner: leaderboardFields.fullTeamBanner,
+      notification_team_banner: leaderboardFields.notificationTeamBanner,
+      booyah_banner: leaderboardFields.booyahBanner,
+      booyah_image: leaderboardFields.booyahImage,
       teamTag: leaderboardFields.teamTag,
       teamLogo: leaderboardFields.teamLogo,
       countryLogo: leaderboardFields.countryLogo,
+      fullTeamBanner: leaderboardFields.fullTeamBanner,
+      notificationTeamBanner: leaderboardFields.notificationTeamBanner,
+      booyahBanner: leaderboardFields.booyahBanner,
+      booyahImage: leaderboardFields.booyahImage,
     };
   });
 
@@ -810,6 +904,8 @@ const mergeTeam = (
   externalPlayerStats,
   roomTeamMap = {},
   assetLookup = {},
+  bannerIndex = {},
+  booyahAssetImage = "",
 ) => {
   if (!team) return {};
 
@@ -835,6 +931,10 @@ const mergeTeam = (
   const dbCountryLogo = meta.country_logo;
 
   const dbTeamLogo = meta.team_logo;
+  const teamBanners = teamIdKey ? bannerIndex[teamIdKey] || {} : {};
+  const fullTeamBanner = teamBanners.fullTeamBanner || "";
+  const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
+  const booyahBanner = hasTeamBooyah(team) ? booyahAssetImage : "";
 
   /* ================= FINAL MERGED VALUES ================= */
   const finalTeamName = dbTeamName || getTeamName(team) || "";
@@ -898,11 +998,19 @@ const mergeTeam = (
 
     country_logo: finalCountryLogo,
     team_logo: finalTeamLogo,
+    full_team_banner: fullTeamBanner,
+    notification_team_banner: notificationTeamBanner,
+    booyah_banner: booyahBanner,
+    booyah_image: booyahBanner,
 
     // compatibility keys
     teamTag: finalShortTag,
     countryLogo: finalCountryLogo,
     teamLogo: finalTeamLogo,
+    fullTeamBanner,
+    notificationTeamBanner,
+    booyahBanner,
+    booyahImage: booyahBanner,
 
     player_pics: mergedPlayerPics,
     playerPics: mergedPlayerPics,
@@ -943,6 +1051,14 @@ const mergeTeam = (
         roomTeamId: roomTeamIdKey,
         country_logo: finalCountryLogo,
         team_logo: finalTeamLogo,
+        full_team_banner: fullTeamBanner,
+        notification_team_banner: notificationTeamBanner,
+        booyah_banner: booyahBanner,
+        booyah_image: booyahBanner,
+        fullTeamBanner,
+        notificationTeamBanner,
+        booyahBanner,
+        booyahImage: booyahBanner,
         team_name: finalTeamName,
       };
     }),
@@ -967,6 +1083,8 @@ const buildStandings = async (id, logoCache = {}) => {
   const metaIndex = await buildTeamMetaIndex();
   const roomTeamMap = await buildRoomTeamMappingIndex(id);
   const playerIndex = await buildPlayerIndex();
+  const bannerIndex = await buildTeamBannerIndex();
+  const booyahAssetImage = await getBooyahAssetImage();
   const assetLookup = await buildAssetLookup(
     pool,
     process.env.BASE_URL || "http://82.29.155.252:3000",
@@ -981,6 +1099,8 @@ const buildStandings = async (id, logoCache = {}) => {
       externalPlayerStats,
       roomTeamMap,
       assetLookup,
+      bannerIndex,
+      booyahAssetImage,
     ),
   );
   const overallLeaderboard = await buildOverallLeaderboard(id, teams, playerIndex);
