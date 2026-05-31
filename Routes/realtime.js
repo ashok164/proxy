@@ -1270,6 +1270,36 @@ const handleWS = (req, socket) => {
 };
 
 /* ================= HIGH SPEED BROWSER HTTP ENDPOINTS ================= */
+router.get("/raw/:matchId", async (req, res) => {
+  try {
+    const matchId = String(req.params.matchId || "").trim();
+
+    if (!matchId || matchId === "undefined") {
+      return res
+        .status(400)
+        .json({ success: false, message: "matchId is required" });
+    }
+
+    const data = await fetchMatch(matchId);
+
+    return res.json({
+      success: true,
+      type: "garena_raw",
+      matchId,
+      data,
+    });
+  } catch (err) {
+    console.error("Raw Garena match fetch failed:", err.message);
+
+    const status = err.response?.status || 500;
+    return res.status(status).json({
+      success: false,
+      message: err.response?.data?.message || err.message,
+      data: err.response?.data,
+    });
+  }
+});
+
 router.get(
   ["/ws/realtime/:matchId", "/realtime/:matchId", "/tablestandings/:matchId"],
   async (req, res) => {
