@@ -305,16 +305,30 @@ router.delete("/:id", async (req, res) => {
   try {
     await ensureMappingTemplatesTable();
 
+    await pool.query("BEGIN");
+
+    await pool.query(
+      `
+      UPDATE game_details
+      SET mapping_template_id = NULL, updated_at = NOW()
+      WHERE mapping_template_id = $1
+      `,
+      [req.params.id],
+    );
+
     const result = await pool.query(
       "DELETE FROM mapping_templates WHERE id = $1 RETURNING *",
       [req.params.id],
     );
 
     if (!result.rows.length) {
+      await pool.query("ROLLBACK");
       return res
         .status(404)
         .json({ success: false, message: "Mapping template not found" });
     }
+
+    await pool.query("COMMIT");
 
     return res.json({
       success: true,
@@ -322,6 +336,7 @@ router.delete("/:id", async (req, res) => {
       data: formatRow(result.rows[0]),
     });
   } catch (err) {
+    await pool.query("ROLLBACK").catch(() => {});
     console.error("Mapping template delete failed:", err);
     return res.status(500).json({ success: false, message: err.message });
   }

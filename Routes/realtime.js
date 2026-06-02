@@ -12,6 +12,7 @@ const {
   getPlayersFromTeamPayload,
   saveMatchPlayers,
 } = require("../Data/matchMetadata");
+const { verifyAndCorrectTeamMappings } = require("../Data/teamIdentityVerifier");
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -1150,7 +1151,7 @@ const mergeTeam = (
 const buildStandings = async (id, logoCache = {}) => {
   const data = await fetchMatch(id);
   const meta = await getRealtimeMeta();
-  const roomTeamMap = await buildRoomTeamMappingIndex(id);
+  const initialRoomTeamMap = await buildRoomTeamMappingIndex(id);
   const {
     metaIndex,
     playerIndex,
@@ -1159,7 +1160,23 @@ const buildStandings = async (id, logoCache = {}) => {
     assetLookup,
   } = meta;
   const externalPlayerStats = getPlayerStats(data);
-  const teams = getTeams(data).map((team) =>
+  const rawTeams = getTeams(data);
+  const {
+    roomTeamMap,
+    corrections: teamMappingCorrections,
+    detections: teamMappingDetections,
+  } = await verifyAndCorrectTeamMappings(pool, {
+    matchId: id,
+    teams: rawTeams,
+    existingRoomMap: initialRoomTeamMap,
+    getRoomTeamId: getTeamId,
+    getPlayersFromTeam: (team) =>
+      team.player_stats !== undefined
+        ? team.player_stats
+        : filterPlayerStatsByTeam(externalPlayerStats, normalizeTeamIdKey(getTeamId(team))),
+    normalizeTeamId: normalizeTeamIdKey,
+  });
+  const teams = rawTeams.map((team) =>
     mergeTeam(
       team,
       metaIndex,
@@ -1186,6 +1203,8 @@ const buildStandings = async (id, logoCache = {}) => {
     matchId: id,
     schema: "realtime.v2",
     roomTeamMap,
+    teamMappingCorrections,
+    teamMappingDetections,
     liveStandings2: liveStandings,
     liveOverall,
     standings: teams,
@@ -1206,6 +1225,7 @@ const buildLiveBroadcastPayload = (standings = {}) => ({
   schema: standings.schema || "realtime.v2",
   matchId: standings.matchId,
   roomTeamMap: standings.roomTeamMap || {},
+  teamMappingCorrections: standings.teamMappingCorrections || [],
   liveStandings2: standings.liveStandings2 || [],
   liveOverall: standings.liveOverall || [],
 });
