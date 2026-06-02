@@ -217,6 +217,7 @@ const compactTeam = (team) => {
     k: getTeamKills(team),
     a: Math.max(0, toNumber(team.playersAlive || team.players_alive || players.filter(p => compactPlayer(p).st < 2).length)),
     tp: toNumber(firstValue(team.total_points, team.totalPoints, team.points, team.score, 0)),
+    wr: firstValue(team.win_rate, team.winRate, team.winrate, 0),
     el: Boolean(team.is_eliminated || team.isEliminated),
     pl: Boolean(team.is_playing !== false && team.isPlaying !== false),
     pls: players.map(compactPlayer),

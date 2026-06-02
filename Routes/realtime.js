@@ -797,6 +797,7 @@ const compactRealtimeTeam = (team = {}) => {
     historical_kills: firstValue(team.historicalKills, team.historical_kills, 0),
     historical_points: firstValue(team.historicalPoints, team.historical_points, 0),
     matches_played: firstValue(team.matchesPlayed, team.matches_played, 0),
+    win_rate: firstValue(team.win_rate, team.winRate, team.winrate, 0),
     is_playing: firstValue(team.isPlaying, team.is_playing, players.length > 0),
     is_eliminated: Boolean(team.is_eliminated),
     mapping_matched: Boolean(team.mappingMatched || team.mapping_matched),
