@@ -621,25 +621,33 @@ const mergeStoredAssetList = (
   preferredLookup = {},
 ) => {
   const byId = {};
+  const byName = {};
   for (const row of storedRows) {
     const formatted = formatAsset(baseUrl, row);
     if (formatted.id) byId[formatted.id] = formatted;
+    if (formatted.name) byName[String(formatted.name).toLowerCase()] = formatted;
   }
 
-  const merged = fallbackAssets.map((asset) => ({
-    id: asset.id || "",
-    name:
-      byId[asset.id]?.name ||
-      asset.name ||
-      anyAssetLookup.byId?.[String(asset.id || "")]?.name ||
-      "",
-    image:
-      byId[asset.id]?.image ||
-      anyAssetLookup.byId?.[String(asset.id || "")]?.image ||
-      anyAssetLookup.byName?.[String(asset.name || "").toLowerCase()]?.image ||
-      resolveFromLookup(preferredLookup, asset).image ||
-      formatImageUrl(baseUrl, asset.image || ""),
-  }));
+  const merged = fallbackAssets.map((asset) => {
+    const stored =
+      byId[asset.id] ||
+      byName[String(asset.name || "").toLowerCase()] ||
+      {};
+    const resolved =
+      resolveFromLookup(preferredLookup, asset) ||
+      anyAssetLookup.byId?.[String(asset.id || "")] ||
+      anyAssetLookup.byName?.[String(asset.name || "").toLowerCase()] ||
+      {};
+
+    return {
+      id: stored.id || asset.id || resolved.id || "",
+      name: stored.name || asset.name || resolved.name || "",
+      image:
+        stored.image ||
+        resolved.image ||
+        formatImageUrl(baseUrl, asset.image || ""),
+    };
+  });
 
   for (const asset of Object.values(byId)) {
     if (!merged.some((item) => String(item.id) === String(asset.id))) {

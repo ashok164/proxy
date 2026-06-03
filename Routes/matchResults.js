@@ -719,10 +719,21 @@ const formatResultRowWithPlayers = (
   playersByResult = {},
   booyahAssetImage = "",
   bannerIndex = {},
-) => ({
-  ...formatResultRow(row, baseUrl, booyahAssetImage, bannerIndex),
-  players: playersByResult[row.id] || [],
-});
+) => {
+  const formattedRow = formatResultRow(row, baseUrl, booyahAssetImage, bannerIndex);
+
+  return {
+    ...formattedRow,
+    players: (playersByResult[row.id] || []).map((player) => ({
+      ...player,
+      teamTag: formattedRow.teamTag,
+      full_team_banner: formattedRow.full_team_banner,
+      notification_team_banner: formattedRow.notification_team_banner,
+      fullTeamBanner: formattedRow.fullTeamBanner,
+      notificationTeamBanner: formattedRow.notificationTeamBanner,
+    })),
+  };
+};
 
 const formatAggregateRow = (
   row,
