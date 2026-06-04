@@ -47,11 +47,6 @@ const normalizeName = (value) =>
     .trim()
     .replace(/\s+/g, " ");
 
-const getNameTokens = (value) =>
-  normalizeName(value)
-    .split(" ")
-    .filter((token) => token.length > 1 && !["esport", "esports", "team", "gaming"].includes(token));
-
 const getTeamName = (team = {}) =>
   firstValue(team.team_name, team.teamName, team.name, team.team, team.title);
 
@@ -76,24 +71,6 @@ const buildRegisteredPlayerIndex = async (pool, normalizeTeamId) => {
   return byUid;
 };
 
-const buildRegisteredTeamIndex = async (pool, normalizeTeamId) => {
-  const result = await pool.query(`
-    SELECT team_id, team_name, short_tag
-    FROM teams
-  `);
-
-  return result.rows
-    .map((row) => ({
-      teamId: normalizeTeamId(row.team_id),
-      teamName: row.team_name || "",
-      shortTag: row.short_tag || "",
-      normalizedName: normalizeName(row.team_name),
-      normalizedTag: normalizeName(row.short_tag),
-      nameTokens: getNameTokens(row.team_name),
-    }))
-    .filter((row) => row.teamId);
-};
-
 const buildExistingRoomMap = async (pool, matchId, normalizeTeamId) => {
   const result = await pool.query(
     `
@@ -112,6 +89,36 @@ const buildExistingRoomMap = async (pool, matchId, normalizeTeamId) => {
       ])
       .filter(([roomTeamId, permanentTeamId]) => roomTeamId && permanentTeamId),
   );
+};
+
+const buildMappedTeamIdentities = async (pool, matchId, normalizeTeamId) => {
+  const result = await pool.query(
+    `
+    SELECT
+      mtm.room_team_id,
+      mtm.permanent_team_id,
+      mtm.mapped_team_name,
+      mtm.mapped_team_tag,
+      t.team_name,
+      t.short_tag
+    FROM match_team_mappings mtm
+    LEFT JOIN teams t
+      ON t.team_id = mtm.permanent_team_id
+    WHERE mtm.match_id = $1
+    `,
+    [matchId],
+  );
+
+  return result.rows
+    .map((row) => ({
+      roomTeamId: normalizeTeamId(row.room_team_id),
+      teamId: normalizeTeamId(row.permanent_team_id),
+      teamName: row.mapped_team_name || row.team_name || "",
+      teamTag: row.mapped_team_tag || row.short_tag || "",
+      normalizedName: normalizeName(row.mapped_team_name || row.team_name),
+      normalizedTag: normalizeName(row.mapped_team_tag || row.short_tag),
+    }))
+    .filter((row) => row.teamId);
 };
 
 const scoreTeamIdentity = (players, registeredByUid) => {
@@ -149,7 +156,7 @@ const scoreTeamIdentity = (players, registeredByUid) => {
   };
 };
 
-const scoreNameIdentity = (teamName, registeredTeams) => {
+const matchMappedIdentity = (teamName, mappedTeams) => {
   const normalized = normalizeName(teamName);
   if (!normalized) {
     return {
@@ -161,56 +168,22 @@ const scoreNameIdentity = (teamName, registeredTeams) => {
     };
   }
 
-  const sourceTokens = getNameTokens(normalized);
-  const ranked = registeredTeams
-    .map((team) => {
-      let score = 0;
-
-      if (team.normalizedName === normalized) score += 100;
-      if (team.normalizedTag && team.normalizedTag === normalized) score += 90;
-      if (team.normalizedName && normalized.includes(team.normalizedName)) score += 70;
-      if (team.normalizedName && team.normalizedName.includes(normalized)) score += 60;
-
-      const tokenMatches = team.nameTokens.filter((token) =>
-        sourceTokens.includes(token),
-      ).length;
-      score += tokenMatches * 18;
-
-      if (
-        team.normalizedTag &&
-        sourceTokens.includes(team.normalizedTag) &&
-        team.normalizedTag.length >= 2
-      ) {
-        score += 35;
-      }
-
-      return {
-        teamId: team.teamId,
-        teamName: team.teamName,
-        shortTag: team.shortTag,
-        score,
-      };
-    })
-    .filter((team) => team.score > 0)
-    .sort((left, right) => right.score - left.score);
-
-  const best = ranked[0] || {};
-  const second = ranked[1] || {};
-  const minScore = Number(process.env.TEAM_IDENTITY_NAME_MIN_SCORE) || 70;
-  const minGap = Number(process.env.TEAM_IDENTITY_NAME_MIN_GAP) || 20;
+  const nameMatch = mappedTeams.find(
+    (team) => team.normalizedName && team.normalizedName === normalized,
+  );
+  const tagMatch = mappedTeams.find(
+    (team) => team.normalizedTag && team.normalizedTag === normalized,
+  );
+  const best = nameMatch || tagMatch || {};
 
   return {
     teamId: best.teamId || "",
     teamName: best.teamName || "",
-    shortTag: best.shortTag || "",
-    score: best.score || 0,
-    secondScore: second.score || 0,
-    matched: Boolean(
-      best.teamId &&
-        best.score >= minScore &&
-        best.score - (second.score || 0) >= minGap,
-    ),
-    reason: "team-name",
+    shortTag: best.teamTag || "",
+    score: nameMatch ? 100 : tagMatch ? 90 : 0,
+    secondScore: 0,
+    matched: Boolean(best.teamId),
+    reason: nameMatch ? "mapped-team-name" : tagMatch ? "mapped-team-tag" : "no-mapped-identity-match",
   };
 };
 
@@ -237,16 +210,26 @@ const persistCorrections = async (pool, matchId, corrections) => {
           match_id,
           room_team_id,
           permanent_team_id,
+          mapped_team_name,
+          mapped_team_tag,
           slot_number,
           updated_at
         )
-        VALUES ($1, $2, $3, NULL, NOW())
+        VALUES ($1, $2, $3, $4, $5, NULL, NOW())
         ON CONFLICT (match_id, room_team_id) DO UPDATE
         SET
           permanent_team_id = EXCLUDED.permanent_team_id,
+          mapped_team_name = EXCLUDED.mapped_team_name,
+          mapped_team_tag = EXCLUDED.mapped_team_tag,
           updated_at = NOW()
         `,
-        [matchId, correction.roomTeamId, correction.detectedPermanentTeamId],
+        [
+          matchId,
+          correction.roomTeamId,
+          correction.detectedPermanentTeamId,
+          correction.detectedTeamName || null,
+          correction.detectedTeamTag || null,
+        ],
       );
     }
 
@@ -281,28 +264,34 @@ const verifyAndCorrectTeamMappings = async (
   const roomTeamMap =
     existingRoomMap || (await buildExistingRoomMap(pool, cleanMatchId, normalizeTeamId));
   const registeredByUid = await buildRegisteredPlayerIndex(pool, normalizeTeamId);
-  const registeredTeams = await buildRegisteredTeamIndex(pool, normalizeTeamId);
+  const mappedTeams = await buildMappedTeamIdentities(pool, cleanMatchId, normalizeTeamId);
   const detections = {};
 
   for (const team of teams) {
     const roomTeamId = normalizeTeamId(getRoomTeamId(team));
     if (!roomTeamId) continue;
 
-    const uidDetection = scoreTeamIdentity(getPlayersFromTeam(team), registeredByUid);
-    const nameDetection = uidDetection.matched
+    const mappedIdentityDetection = matchMappedIdentity(getTeamName(team), mappedTeams);
+    const uidDetection = mappedIdentityDetection.matched
       ? null
-      : scoreNameIdentity(getTeamName(team), registeredTeams);
-    const detection = uidDetection.matched
-      ? { ...uidDetection, source: "player-uid" }
+      : scoreTeamIdentity(getPlayersFromTeam(team), registeredByUid);
+    const detection = mappedIdentityDetection.matched
+      ? {
+          ...mappedIdentityDetection,
+          playerUidCount: 0,
+          source: mappedIdentityDetection.reason,
+          detectedTeamName: mappedIdentityDetection.teamName,
+          detectedTeamTag: mappedIdentityDetection.shortTag,
+        }
       : {
-          teamId: nameDetection.teamId,
-          score: nameDetection.score,
-          secondScore: nameDetection.secondScore,
-          playerUidCount: uidDetection.playerUidCount,
-          matched: nameDetection.matched,
-          source: "team-name",
-          detectedTeamName: nameDetection.teamName,
-          detectedTeamTag: nameDetection.shortTag,
+          ...uidDetection,
+          source: "player-uid",
+          detectedTeamName:
+            mappedTeams.find((mappedTeam) => mappedTeam.teamId === uidDetection.teamId)
+              ?.teamName || "",
+          detectedTeamTag:
+            mappedTeams.find((mappedTeam) => mappedTeam.teamId === uidDetection.teamId)
+              ?.teamTag || "",
         };
     detections[roomTeamId] = detection;
   }
@@ -338,6 +327,14 @@ const verifyAndCorrectTeamMappings = async (
     }));
 
   for (const correction of corrections) {
+    for (const [mappedRoomTeamId, permanentTeamId] of Object.entries(roomTeamMap)) {
+      if (
+        mappedRoomTeamId !== correction.roomTeamId &&
+        permanentTeamId === correction.detectedPermanentTeamId
+      ) {
+        delete roomTeamMap[mappedRoomTeamId];
+      }
+    }
     roomTeamMap[correction.roomTeamId] = correction.detectedPermanentTeamId;
   }
 

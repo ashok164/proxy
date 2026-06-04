@@ -204,12 +204,24 @@ const initDB = async () => {
         match_id TEXT NOT NULL,
         room_team_id TEXT NOT NULL,
         permanent_team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+        mapped_team_name TEXT,
+        mapped_team_tag TEXT,
         slot_number INTEGER,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW(),
         CONSTRAINT match_team_mappings_match_room_unique UNIQUE (match_id, room_team_id),
         CONSTRAINT match_team_mappings_match_team_unique UNIQUE (match_id, permanent_team_id)
       );
+    `);
+
+    await pool.query(`
+      ALTER TABLE match_team_mappings
+      ADD COLUMN IF NOT EXISTS mapped_team_name TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE match_team_mappings
+      ADD COLUMN IF NOT EXISTS mapped_team_tag TEXT;
     `);
 
     await pool.query(`

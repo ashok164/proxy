@@ -74,6 +74,12 @@ const normalizeMappingsPayload = (body = {}) => {
       matchId,
       roomTeamId: toNullableString(roomTeamId),
       permanentTeamId: toNullableString(permanentTeamId),
+      teamName: toNullableString(
+        getBodyValue(record, "teamName", "team_name", "mappedTeamName", "mapped_team_name"),
+      ),
+      teamTag: toNullableString(
+        getBodyValue(record, "teamTag", "team_tag", "shortTag", "short_tag", "mappedTeamTag", "mapped_team_tag"),
+      ),
       slotNumber: toInteger(
         getBodyValue(record, "slotNumber", "slot_number", "slot"),
       ),
@@ -87,8 +93,8 @@ const formatRow = (row) => ({
   roomTeamId: row.room_team_id,
   permanentTeamId: row.permanent_team_id,
   slotNumber: row.slot_number,
-  teamName: row.team_name || "",
-  teamTag: row.short_tag || "",
+  teamName: row.mapped_team_name || row.team_name || "",
+  teamTag: row.mapped_team_tag || row.short_tag || "",
   teamLogo: row.team_logo || "",
   countryLogo: row.country_logo || "",
   createdAt: row.created_at,
@@ -150,8 +156,8 @@ router.get("/", async (req, res) => {
             'roomTeamId', mtm.room_team_id,
             'permanentTeamId', mtm.permanent_team_id,
             'slotNumber', mtm.slot_number,
-            'teamName', COALESCE(t.team_name, ''),
-            'teamTag', COALESCE(t.short_tag, ''),
+            'teamName', COALESCE(mtm.mapped_team_name, t.team_name, ''),
+            'teamTag', COALESCE(mtm.mapped_team_tag, t.short_tag, ''),
             'teamLogo', COALESCE(t.team_logo, ''),
             'countryLogo', COALESCE(t.country_logo, ''),
             'createdAt', mtm.created_at,
@@ -215,13 +221,17 @@ router.post("/create", async (req, res) => {
           match_id,
           room_team_id,
           permanent_team_id,
+          mapped_team_name,
+          mapped_team_tag,
           slot_number,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
         ON CONFLICT (match_id, room_team_id) DO UPDATE
         SET
           permanent_team_id = EXCLUDED.permanent_team_id,
+          mapped_team_name = EXCLUDED.mapped_team_name,
+          mapped_team_tag = EXCLUDED.mapped_team_tag,
           slot_number = EXCLUDED.slot_number,
           updated_at = NOW()
         `,
@@ -229,6 +239,8 @@ router.post("/create", async (req, res) => {
           mapping.matchId,
           mapping.roomTeamId,
           mapping.permanentTeamId,
+          mapping.teamName,
+          mapping.teamTag,
           mapping.slotNumber,
         ],
       );
@@ -286,15 +298,19 @@ router.put("/:matchId", async (req, res) => {
           match_id,
           room_team_id,
           permanent_team_id,
+          mapped_team_name,
+          mapped_team_tag,
           slot_number,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
         `,
         [
           matchId,
           mapping.roomTeamId,
           mapping.permanentTeamId,
+          mapping.teamName,
+          mapping.teamTag,
           mapping.slotNumber,
         ],
       );
@@ -382,15 +398,19 @@ router.post("/:matchId/apply-template", async (req, res) => {
           match_id,
           room_team_id,
           permanent_team_id,
+          mapped_team_name,
+          mapped_team_tag,
           slot_number,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
         `,
         [
           matchId,
           mapping.roomTeamId,
           mapping.permanentTeamId,
+          mapping.teamName,
+          mapping.teamTag,
           mapping.slotNumber,
         ],
       );

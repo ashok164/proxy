@@ -67,6 +67,12 @@ const normalizeTemplateMappings = (body = {}) => {
         ),
       ),
     ),
+    teamName: toNullableString(
+      getBodyValue(record, "teamName", "team_name", "mappedTeamName", "mapped_team_name"),
+    ),
+    teamTag: toNullableString(
+      getBodyValue(record, "teamTag", "team_tag", "shortTag", "short_tag", "mappedTeamTag", "mapped_team_tag"),
+    ),
     slotNumber: toInteger(getBodyValue(record, "slotNumber", "slot_number", "slot")),
   }));
 };
