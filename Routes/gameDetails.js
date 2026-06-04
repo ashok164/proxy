@@ -369,28 +369,73 @@ router.put("/update/:id", async (req, res) => {
 });
 
 router.delete("/delete/:id", async (req, res) => {
+  let client;
+
   try {
     await ensureGameDetailsTable();
 
-    const result = await pool.query(
-      "DELETE FROM game_details WHERE id = $1 RETURNING *",
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    const gameDetailResult = await client.query(
+      "SELECT * FROM game_details WHERE id = $1 FOR UPDATE",
       [req.params.id],
     );
 
-    if (!result.rows.length) {
+    if (!gameDetailResult.rows.length) {
+      await client.query("ROLLBACK");
       return res
         .status(404)
         .json({ success: false, message: "Game detail not found" });
     }
 
+    const gameDetail = gameDetailResult.rows[0];
+    const matchId = toNullableString(gameDetail.match_id);
+    let deletedPlayers = 0;
+    let deletedResults = 0;
+    let deletedMappings = 0;
+
+    if (matchId) {
+      const playerResult = await client.query(
+        "DELETE FROM match_result_players WHERE match_id = $1",
+        [matchId],
+      );
+      const resultResult = await client.query(
+        "DELETE FROM match_results WHERE match_id = $1",
+        [matchId],
+      );
+      const mappingResult = await client.query(
+        "DELETE FROM match_team_mappings WHERE match_id = $1",
+        [matchId],
+      );
+
+      deletedPlayers = playerResult.rowCount;
+      deletedResults = resultResult.rowCount;
+      deletedMappings = mappingResult.rowCount;
+    }
+
+    const result = await client.query(
+      "DELETE FROM game_details WHERE id = $1 RETURNING *",
+      [req.params.id],
+    );
+
+    await client.query("COMMIT");
+
     return res.json({
       success: true,
-      message: "Game detail deleted successfully",
+      message: "Game detail and related match data deleted successfully",
       data: formatRow(result.rows[0]),
+      matchId,
+      deletedPlayers,
+      deletedResults,
+      deletedMappings,
     });
   } catch (err) {
+    if (client) await client.query("ROLLBACK");
     console.error("Game detail delete failed:", err);
     return res.status(500).json({ success: false, message: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
