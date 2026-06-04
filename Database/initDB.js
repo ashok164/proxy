@@ -203,7 +203,7 @@ const initDB = async () => {
         id SERIAL PRIMARY KEY,
         match_id TEXT NOT NULL,
         room_team_id TEXT NOT NULL,
-        permanent_team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+        permanent_team_id TEXT NOT NULL REFERENCES teams(team_id) ON UPDATE CASCADE ON DELETE CASCADE,
         mapped_team_name TEXT,
         mapped_team_tag TEXT,
         slot_number INTEGER,
@@ -222,6 +222,18 @@ const initDB = async () => {
     await pool.query(`
       ALTER TABLE match_team_mappings
       ADD COLUMN IF NOT EXISTS mapped_team_tag TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE match_team_mappings
+      DROP CONSTRAINT IF EXISTS match_team_mappings_permanent_team_id_fkey;
+
+      ALTER TABLE match_team_mappings
+      ADD CONSTRAINT match_team_mappings_permanent_team_id_fkey
+      FOREIGN KEY (permanent_team_id)
+      REFERENCES teams(team_id)
+      ON UPDATE CASCADE
+      ON DELETE CASCADE;
     `);
 
     await pool.query(`

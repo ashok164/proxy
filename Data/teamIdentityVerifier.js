@@ -313,7 +313,18 @@ const verifyAndCorrectTeamMappings = async (
   }
 
   const corrections = Object.values(chosenByPermanentTeam)
-    .filter((detection) => roomTeamMap[detection.roomTeamId] !== detection.teamId)
+    // Saved room mappings are operator-selected and must remain authoritative.
+    // Auto-detection may fill an unmapped room, but it must never rewrite or
+    // delete an existing mapping when the live feed exposes stale team names.
+    .filter(
+      (detection) =>
+        !roomTeamMap[detection.roomTeamId] &&
+        !Object.entries(roomTeamMap).some(
+          ([mappedRoomTeamId, permanentTeamId]) =>
+            mappedRoomTeamId !== detection.roomTeamId &&
+            permanentTeamId === detection.teamId,
+        ),
+    )
     .map((detection) => ({
       roomTeamId: detection.roomTeamId,
       previousPermanentTeamId: roomTeamMap[detection.roomTeamId] || null,
