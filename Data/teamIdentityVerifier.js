@@ -60,15 +60,34 @@ const getPlayerUid = (player = {}) =>
     player.id,
   );
 
-const buildRegisteredTeamIdentities = async (pool, normalizeTeamId) => {
+const buildRegisteredTeamIdentities = async (
+  pool,
+  normalizeTeamId,
+  tournamentId,
+  playingOnly = false,
+) => {
+  const params = [];
+  const whereParts = [];
+  if (tournamentId) {
+    params.push(tournamentId);
+    whereParts.push(`tournament_id = $${params.length}`);
+  }
+  if (playingOnly) {
+    whereParts.push("is_playing = true");
+  }
+  const tournamentWhere = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+
   const result = await pool.query(`
-    SELECT team_id, team_name, short_tag
+    SELECT team_id, permanent_team_id, team_name, short_tag
     FROM teams
-  `);
+    ${tournamentWhere}
+  `, params);
 
   return result.rows
     .map((row) => ({
-      teamId: normalizeTeamId(row.team_id),
+      teamId: normalizeTeamId(row.permanent_team_id || row.team_id),
+      displayTeamId: normalizeTeamId(row.team_id),
+      permanentTeamId: normalizeTeamId(row.permanent_team_id || row.team_id),
       teamName: row.team_name || "",
       teamTag: row.short_tag || "",
       normalizedName: normalizeName(row.team_name),
@@ -77,18 +96,38 @@ const buildRegisteredTeamIdentities = async (pool, normalizeTeamId) => {
     .filter((row) => row.teamId);
 };
 
-const buildRegisteredPlayerIndex = async (pool, normalizeTeamId) => {
+const buildRegisteredPlayerIndex = async (
+  pool,
+  normalizeTeamId,
+  tournamentId,
+  playingOnly = false,
+) => {
+  const params = [];
+  const whereParts = [];
+  if (tournamentId) {
+    params.push(tournamentId);
+    whereParts.push(`tp.tournament_id = $${params.length}`);
+  }
+  if (playingOnly) {
+    whereParts.push("t.is_playing = true");
+  }
+  const tournamentWhere = whereParts.length ? `AND ${whereParts.join(" AND ")}` : "";
+
   const result = await pool.query(`
-    SELECT team_id, player_uid
-    FROM team_players
+    SELECT tp.team_id, COALESCE(t.permanent_team_id, tp.team_id) AS permanent_team_id, tp.player_uid
+    FROM team_players tp
+    LEFT JOIN teams t
+      ON t.team_id = tp.team_id
+      AND t.tournament_id = tp.tournament_id
     WHERE player_uid IS NOT NULL AND TRIM(player_uid) <> ''
-  `);
+      ${tournamentWhere}
+  `, params);
 
   const byUid = {};
 
   for (const row of result.rows) {
     const uid = normalizePlayerUid(row.player_uid);
-    const teamId = normalizeTeamId(row.team_id);
+    const teamId = normalizeTeamId(row.permanent_team_id || row.team_id);
     if (!uid || !teamId) continue;
 
     if (!byUid[uid]) byUid[uid] = {};
@@ -101,6 +140,10 @@ const buildRegisteredPlayerIndex = async (pool, normalizeTeamId) => {
 const matchByNameOrTag = (team, registeredTeams) => {
   const normalizedName = normalizeName(getTeamName(team));
   const normalizedTag = normalizeName(getTeamTag(team));
+  const findUnique = (predicate) => {
+    const matches = registeredTeams.filter(predicate);
+    return matches.length === 1 ? matches[0] : null;
+  };
 
   const nameMatch = normalizedName
     ? registeredTeams.find((entry) => entry.normalizedName === normalizedName)
@@ -131,6 +174,44 @@ const matchByNameOrTag = (team, registeredTeams) => {
       playerUidCount: 0,
       matched: true,
       source: "registered-team-tag",
+    };
+  }
+
+  const nameToTagMatch = normalizedName
+    ? registeredTeams.find((entry) => entry.normalizedTag === normalizedName)
+    : null;
+  if (nameToTagMatch) {
+    return {
+      teamId: nameToTagMatch.teamId,
+      teamName: nameToTagMatch.teamName,
+      shortTag: nameToTagMatch.teamTag,
+      score: 95,
+      secondScore: 0,
+      playerUidCount: 0,
+      matched: true,
+      source: "registered-team-name-to-tag",
+    };
+  }
+
+  const longNameMatch =
+    normalizedName.length >= 8
+      ? findUnique(
+          (entry) =>
+            entry.normalizedName.length >= 8 &&
+            (entry.normalizedName.startsWith(normalizedName) ||
+              normalizedName.startsWith(entry.normalizedName)),
+        )
+      : null;
+  if (longNameMatch) {
+    return {
+      teamId: longNameMatch.teamId,
+      teamName: longNameMatch.teamName,
+      shortTag: longNameMatch.teamTag,
+      score: 85,
+      secondScore: 0,
+      playerUidCount: 0,
+      matched: true,
+      source: "registered-team-name-prefix",
     };
   }
 
@@ -190,6 +271,8 @@ const resolveTeamIdentities = async (
     getRoomTeamId,
     getPlayersFromTeam = getDefaultPlayersFromTeam,
     normalizeTeamId = defaultNormalizeTeamId,
+    tournamentId,
+    playingOnly = false,
   } = {},
 ) => {
   if (!Array.isArray(teams) || !teams.length) {
@@ -201,8 +284,18 @@ const resolveTeamIdentities = async (
     };
   }
 
-  const registeredTeams = await buildRegisteredTeamIdentities(pool, normalizeTeamId);
-  const registeredByUid = await buildRegisteredPlayerIndex(pool, normalizeTeamId);
+  const registeredTeams = await buildRegisteredTeamIdentities(
+    pool,
+    normalizeTeamId,
+    tournamentId,
+    playingOnly,
+  );
+  const registeredByUid = await buildRegisteredPlayerIndex(
+    pool,
+    normalizeTeamId,
+    tournamentId,
+    playingOnly,
+  );
   const detections = {};
   const roomTeamMap = {};
   const chosenByPermanentTeam = {};
@@ -237,6 +330,7 @@ const resolveTeamIdentities = async (
       roomTeamId: detection.roomTeamId,
       previousPermanentTeamId: null,
       detectedPermanentTeamId: detection.teamId,
+      permanentTeamId: detection.teamId,
       matchedPlayers: detection.source === "player-uid" ? detection.score : 0,
       matchScore: detection.score,
       playerUidCount: detection.playerUidCount,

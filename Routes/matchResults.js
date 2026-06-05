@@ -12,8 +12,12 @@ const {
   saveMatchPlayers,
 } = require("../Data/matchMetadata");
 const { resolveTeamIdentities } = require("../Data/teamIdentityVerifier");
+const {
+  ensureTournamentColumn,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -95,7 +99,8 @@ const fetchRealtimeMatch = async (matchId) => {
   return response.data;
 };
 
-const fetchCachedWebsocketMatch = (matchId) => realtimeRoutes.getCachedStandings?.(matchId);
+const fetchCachedWebsocketMatch = (matchId, tournamentId = null) =>
+  realtimeRoutes.getCachedStandings?.(matchId, tournamentId);
 
 const getRealtimeTeams = (data) =>
   data?.data?.standings ||
@@ -263,17 +268,17 @@ const formatImageUrl = (baseUrl, logoPath) => {
   return `${baseUrl}/uploads/${logoPath.replace(/^\/?uploads\//i, "")}`;
 };
 
-const getBooyahAssetImage = async (baseUrl) => {
+const getBooyahAssetImage = async (baseUrl, tournamentId) => {
   try {
     const result = await pool.query(
       `
       SELECT image_url
       FROM tournament_assets
-      WHERE asset_id = $1 AND active = true
+      WHERE asset_id = $1 AND active = true AND ($2::integer IS NULL OR tournament_id = $2)
       ORDER BY id DESC
       LIMIT 1
       `,
-      ["1"],
+      ["1", tournamentId],
     );
 
     return formatImageUrl(baseUrl, result.rows[0]?.image_url || "");
@@ -294,7 +299,7 @@ const addBannerToIndex = (index, row, key, baseUrl) => {
   index[teamId][key] = formatImageUrl(baseUrl, row.image_url);
 };
 
-const buildTeamBannerIndex = async (baseUrl) => {
+const buildTeamBannerIndex = async (baseUrl, tournamentId) => {
   const index = {};
 
   try {
@@ -302,8 +307,9 @@ const buildTeamBannerIndex = async (baseUrl) => {
       SELECT team_id, image_url
       FROM full_team_banners
       WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+        AND ($1::integer IS NULL OR tournament_id = $1)
       ORDER BY id DESC
-    `);
+    `, [tournamentId]);
 
     for (const row of fullBannerResult.rows) {
       addBannerToIndex(index, row, "fullTeamBanner", baseUrl);
@@ -319,8 +325,9 @@ const buildTeamBannerIndex = async (baseUrl) => {
       SELECT team_id, image_url
       FROM notification_team_banners
       WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+        AND ($1::integer IS NULL OR tournament_id = $1)
       ORDER BY id DESC
-    `);
+    `, [tournamentId]);
 
     for (const row of notificationBannerResult.rows) {
       addBannerToIndex(index, row, "notificationTeamBanner", baseUrl);
@@ -345,8 +352,10 @@ const ensureMatchResultsTable = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS match_results (
       id SERIAL PRIMARY KEY,
+      tournament_id INTEGER,
       match_id TEXT NOT NULL,
       team_id TEXT NOT NULL,
+      permanent_team_id TEXT,
       team_name TEXT,
       team_tag TEXT,
       team_logo TEXT,
@@ -357,11 +366,22 @@ const ensureMatchResultsTable = async () => {
       total_kills INTEGER NOT NULL DEFAULT 0,
       raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW(),
-      CONSTRAINT match_results_match_team_unique UNIQUE (match_id, team_id)
+      updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  await ensureTournamentColumn(pool, "match_results");
+  await pool.query("ALTER TABLE match_results DROP CONSTRAINT IF EXISTS match_results_match_team_unique");
+  await pool.query("DROP INDEX IF EXISTS idx_match_results_match_team_unique");
 
+  await pool.query(`
+    ALTER TABLE match_results
+    ADD COLUMN IF NOT EXISTS permanent_team_id TEXT
+  `);
+  await pool.query(`
+    UPDATE match_results
+    SET permanent_team_id = team_id
+    WHERE permanent_team_id IS NULL OR TRIM(permanent_team_id) = ''
+  `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_match_results_match_id
     ON match_results(match_id);
@@ -371,19 +391,24 @@ const ensureMatchResultsTable = async () => {
     CREATE INDEX IF NOT EXISTS idx_match_results_team_id
     ON match_results(team_id);
   `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_match_results_permanent_team_id
+    ON match_results(permanent_team_id);
+  `);
 
   await pool.query(`
     DELETE FROM match_results mr
     USING match_results duplicate
-    WHERE
-      mr.match_id = duplicate.match_id
+      WHERE
+      mr.tournament_id = duplicate.tournament_id
+      AND mr.match_id = duplicate.match_id
       AND mr.team_id = duplicate.team_id
       AND mr.id < duplicate.id;
   `);
 
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_match_results_match_team_unique
-    ON match_results(match_id, team_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_match_results_tournament_match_team_unique
+    ON match_results(tournament_id, match_id, team_id);
   `);
 
   matchResultsTableReady = true;
@@ -483,10 +508,12 @@ const normalizeResult = (input) => {
   };
 };
 
-const saveRealtimeResultsForMatch = async (matchId) => {
+const saveRealtimeResultsForMatch = async (matchId, tournamentId = null) => {
   await ensureMatchResultsTable();
+  await ensureTournamentColumn(pool, "match_results");
+  await ensureTournamentColumn(pool, "match_result_players");
 
-  const cachedPayload = fetchCachedWebsocketMatch(matchId);
+  const cachedPayload = fetchCachedWebsocketMatch(matchId, tournamentId);
   const payload = cachedPayload || (await fetchRealtimeMatch(matchId));
   const source = cachedPayload ? "websocket-cache" : "realtime";
   const teams = getRealtimeTeams(payload);
@@ -527,6 +554,8 @@ const saveRealtimeResultsForMatch = async (matchId) => {
             normalizeTeamId(getRealtimeTeamId(team)),
           ),
     normalizeTeamId,
+    tournamentId,
+    playingOnly: true,
   });
   const verifiedRoomTeamMap = verification.roomTeamMap || {};
 
@@ -552,10 +581,10 @@ const saveRealtimeResultsForMatch = async (matchId) => {
       `
       SELECT team_name, short_tag, team_logo, country_logo
       FROM teams
-      WHERE team_id = $1
+      WHERE COALESCE(permanent_team_id, team_id) = $1 AND ($2::integer IS NULL OR tournament_id = $2)
       LIMIT 1
       `,
-      [permanentTeamId],
+      [permanentTeamId, tournamentId],
     );
     const teamMeta = teamResult.rows[0] || {};
     const kills = getRealtimeKills(team);
@@ -572,8 +601,10 @@ const saveRealtimeResultsForMatch = async (matchId) => {
     const result = await pool.query(
       `
       INSERT INTO match_results (
+        tournament_id,
         match_id,
         team_id,
+        permanent_team_id,
         team_name,
         team_tag,
         team_logo,
@@ -585,9 +616,10 @@ const saveRealtimeResultsForMatch = async (matchId) => {
         raw_payload,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
-      ON CONFLICT (match_id, team_id) DO UPDATE
+      VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW())
+      ON CONFLICT (tournament_id, match_id, team_id) DO UPDATE
       SET
+        permanent_team_id = EXCLUDED.permanent_team_id,
         team_name = EXCLUDED.team_name,
         team_tag = EXCLUDED.team_tag,
         team_logo = EXCLUDED.team_logo,
@@ -601,6 +633,7 @@ const saveRealtimeResultsForMatch = async (matchId) => {
       RETURNING *
       `,
       [
+        tournamentId,
         matchId,
         permanentTeamId,
         teamName,
@@ -628,6 +661,7 @@ const saveRealtimeResultsForMatch = async (matchId) => {
       matchId,
       permanentTeamId,
       getPlayersFromTeamPayload(team),
+      tournamentId,
     );
 
     savedRows.push(savedRow);
@@ -663,6 +697,8 @@ const formatResultRow = (
   id: row.id,
   matchId: row.match_id,
   teamId: row.team_id,
+  permanentTeamId: row.permanent_team_id || row.team_id,
+  permanent_team_id: row.permanent_team_id || row.team_id,
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
   teamName: row.team_name || "",
@@ -719,6 +755,8 @@ const formatAggregateRow = (
 
   return {
   teamId: row.team_id,
+  permanentTeamId: row.permanent_team_id || row.team_id,
+  permanent_team_id: row.permanent_team_id || row.team_id,
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
   teamName: row.team_name || "",
@@ -790,12 +828,15 @@ const buildOverallPlayersByTeam = (rows = []) => {
   );
 };
 
-const queryMatchResults = async (matchIds) => {
+const queryMatchResults = async (matchIds, tournamentId) => {
+  const uniqueMatchIds = Array.from(
+    new Set((matchIds || []).map((matchId) => String(matchId || "").trim()).filter(Boolean)),
+  );
   const rowsResult = await pool.query(
     `
     SELECT *
     FROM match_results
-    WHERE match_id = ANY($1::text[])
+    WHERE match_id = ANY($1::text[]) AND tournament_id = $2
     ORDER BY
       total_kills DESC,
       kills DESC,
@@ -803,13 +844,14 @@ const queryMatchResults = async (matchIds) => {
       placement DESC,
       team_name ASC
     `,
-    [matchIds],
+    [uniqueMatchIds, tournamentId],
   );
 
   const aggregateResult = await pool.query(
     `
     SELECT
-      team_id,
+      COALESCE(permanent_team_id, team_id) AS permanent_team_id,
+      COALESCE(permanent_team_id, team_id) AS team_id,
       COALESCE(MAX(NULLIF(team_logo, '')), '') AS team_logo,
       COALESCE(MAX(NULLIF(country_logo, '')), '') AS country_logo,
       COALESCE(MAX(NULLIF(team_name, '')), '') AS team_name,
@@ -820,8 +862,8 @@ const queryMatchResults = async (matchIds) => {
       SUM(total_kills) AS total_kills,
       COUNT(DISTINCT match_id) AS matches_played
     FROM match_results
-    WHERE match_id = ANY($1::text[])
-    GROUP BY team_id
+    WHERE match_id = ANY($1::text[]) AND tournament_id = $2
+    GROUP BY COALESCE(permanent_team_id, team_id)
     ORDER BY
       SUM(total_kills) DESC,
       SUM(kills) DESC,
@@ -829,7 +871,7 @@ const queryMatchResults = async (matchIds) => {
       SUM(placement) DESC,
       COALESCE(MAX(NULLIF(team_name, '')), '') ASC
     `,
-    [matchIds],
+    [uniqueMatchIds, tournamentId],
   );
 
   return {
@@ -839,8 +881,9 @@ const queryMatchResults = async (matchIds) => {
 };
 
 router.post("/create", async (req, res) => {
-  try {
+    try {
     await ensureMatchResultsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const records = normalizeResultsPayload(req.body).map(normalizeResult);
     if (!records.length) {
@@ -877,6 +920,7 @@ router.post("/create", async (req, res) => {
             ? team.player_stats
             : normalizePlayersList(team?.players),
         normalizeTeamId,
+        tournamentId,
       });
 
       verifiedRoomMapsByMatch[recordMatchId] = verification.roomTeamMap || {};
@@ -905,10 +949,10 @@ router.post("/create", async (req, res) => {
         `
         SELECT team_name, short_tag, team_logo, country_logo
         FROM teams
-        WHERE team_id = $1
+        WHERE COALESCE(permanent_team_id, team_id) = $1 AND tournament_id = $2
         LIMIT 1
         `,
-        [record.teamId],
+        [record.teamId, tournamentId],
       );
 
       const team = teamResult.rows[0] || {};
@@ -920,8 +964,10 @@ router.post("/create", async (req, res) => {
       const result = await pool.query(
         `
         INSERT INTO match_results (
+          tournament_id,
           match_id,
           team_id,
+          permanent_team_id,
           team_name,
           team_tag,
           team_logo,
@@ -933,9 +979,10 @@ router.post("/create", async (req, res) => {
           raw_payload,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
-        ON CONFLICT (match_id, team_id) DO UPDATE
+        VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW())
+        ON CONFLICT (tournament_id, match_id, team_id) DO UPDATE
         SET
+          permanent_team_id = EXCLUDED.permanent_team_id,
           team_name = EXCLUDED.team_name,
           team_tag = EXCLUDED.team_tag,
           team_logo = EXCLUDED.team_logo,
@@ -949,6 +996,7 @@ router.post("/create", async (req, res) => {
         RETURNING *
         `,
         [
+          tournamentId,
           record.matchId,
           record.teamId,
           teamName,
@@ -975,6 +1023,7 @@ router.post("/create", async (req, res) => {
         record.matchId,
         record.teamId,
         getPlayersFromTeamPayload(record.rawPayload),
+        tournamentId,
       );
 
       savedRows.push(savedRow);
@@ -988,8 +1037,8 @@ router.post("/create", async (req, res) => {
       savedRows.map((row) => row.id),
       baseUrl,
     );
-    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
-    const bannerIndex = await buildTeamBannerIndex(baseUrl);
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl, tournamentId);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl, tournamentId);
 
     return res.json({
       success: true,
@@ -1016,7 +1065,8 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       });
     }
 
-    const result = await saveRealtimeResultsForMatch(matchId);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    const result = await saveRealtimeResultsForMatch(matchId, tournamentId);
 
     const baseUrl = getBaseUrl(req);
     const playersByResult = await loadPlayersForMatchResults(
@@ -1024,8 +1074,8 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       result.savedRows.map((row) => row.id),
       baseUrl,
     );
-    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
-    const bannerIndex = await buildTeamBannerIndex(baseUrl);
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl, tournamentId);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl, tournamentId);
 
     return res.json({
       success: true,
@@ -1060,7 +1110,8 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
     const matchSummaries = [];
 
     for (const matchId of matchIds) {
-      const result = await saveRealtimeResultsForMatch(matchId);
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
+      const result = await saveRealtimeResultsForMatch(matchId, tournamentId);
       savedRows.push(...result.savedRows);
       skippedRows.push(
         ...result.skippedRows.map((row) => ({
@@ -1084,8 +1135,8 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
       savedRows.map((row) => row.id),
       baseUrl,
     );
-    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
-    const bannerIndex = await buildTeamBannerIndex(baseUrl);
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl, tournamentId);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl, tournamentId);
 
     return res.json({
       success: true,
@@ -1112,6 +1163,7 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
 
 const sendMatchResults = async (req, res, matchIds) => {
   await ensureMatchResultsTable();
+  const tournamentId = await getTournamentIdFromRequest(pool, req);
 
   if (!matchIds.length) {
     return res.status(400).json({
@@ -1121,9 +1173,9 @@ const sendMatchResults = async (req, res, matchIds) => {
   }
 
   const baseUrl = getBaseUrl(req);
-  const booyahAssetImage = await getBooyahAssetImage(baseUrl);
-  const bannerIndex = await buildTeamBannerIndex(baseUrl);
-  const result = await queryMatchResults(matchIds);
+  const booyahAssetImage = await getBooyahAssetImage(baseUrl, tournamentId);
+  const bannerIndex = await buildTeamBannerIndex(baseUrl, tournamentId);
+  const result = await queryMatchResults(matchIds, tournamentId);
   const playersByResult = await loadPlayersForMatchResults(
     pool,
     result.rows.map((row) => row.id),
@@ -1144,10 +1196,10 @@ const sendMatchResults = async (req, res, matchIds) => {
   });
 };
 
-const getFullMatchRows = async (matchIds, baseUrl) => {
-  const booyahAssetImage = await getBooyahAssetImage(baseUrl);
-  const bannerIndex = await buildTeamBannerIndex(baseUrl);
-  const result = await queryMatchResults(matchIds);
+const getFullMatchRows = async (matchIds, baseUrl, tournamentId) => {
+  const booyahAssetImage = await getBooyahAssetImage(baseUrl, tournamentId);
+  const bannerIndex = await buildTeamBannerIndex(baseUrl, tournamentId);
+  const result = await queryMatchResults(matchIds, tournamentId);
   const playersByResult = await loadPlayersForMatchResults(
     pool,
     result.rows.map((row) => row.id),
@@ -1195,6 +1247,7 @@ const sortByKillsDamageAssists = (a, b) =>
 
 const sendPlayerRanking = async (req, res, sortFn, options = {}) => {
   await ensureMatchResultsTable();
+  const tournamentId = await getTournamentIdFromRequest(pool, req);
 
   const baseUrl = getBaseUrl(req);
   const matchIds = normalizeMatchIdsPayload({
@@ -1208,7 +1261,7 @@ const sendPlayerRanking = async (req, res, sortFn, options = {}) => {
     });
   }
 
-  const teams = await getFullMatchRows(matchIds, baseUrl);
+  const teams = await getFullMatchRows(matchIds, baseUrl, tournamentId);
   const sourceTeams = options.booyahOnly ? teams.filter(isBooyahTeam) : teams;
   const players = flattenPlayers(sourceTeams)
     .sort(sortFn)
@@ -1230,7 +1283,12 @@ router.get("/team-stats/:matchId", async (req, res) => {
     await ensureMatchResultsTable();
 
     const baseUrl = getBaseUrl(req);
-    const teams = await getFullMatchRows([toNullableString(req.params.matchId)], baseUrl);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    const teams = await getFullMatchRows(
+      [toNullableString(req.params.matchId)],
+      baseUrl,
+      tournamentId,
+    );
     const booyahTeams = teams.filter(isBooyahTeam);
 
     return res.json({
@@ -1291,7 +1349,12 @@ router.get("/booyah/:matchId", async (req, res) => {
     await ensureMatchResultsTable();
 
     const baseUrl = getBaseUrl(req);
-    const teams = await getFullMatchRows([toNullableString(req.params.matchId)], baseUrl);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    const teams = await getFullMatchRows(
+      [toNullableString(req.params.matchId)],
+      baseUrl,
+      tournamentId,
+    );
     const booyahTeams = teams.filter(
       (team) => team.placement === 1 || team.booyahCount > 0,
     );
@@ -1319,11 +1382,12 @@ router.get("/booyah/:matchId", async (req, res) => {
 router.get("/booyah-result/:id", async (req, res) => {
   try {
     await ensureMatchResultsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const baseUrl = getBaseUrl(req);
     const sourceResult = await pool.query(
-      "SELECT match_id FROM match_results WHERE id = $1 LIMIT 1",
-      [req.params.id],
+      "SELECT match_id FROM match_results WHERE id = $1 AND tournament_id = $2 LIMIT 1",
+      [req.params.id, tournamentId],
     );
 
     if (!sourceResult.rows.length) {
@@ -1336,11 +1400,11 @@ router.get("/booyah-result/:id", async (req, res) => {
       `
       SELECT *
       FROM match_results
-      WHERE match_id = $1 AND (placement = 1 OR booyah_count > 0)
+      WHERE match_id = $1 AND tournament_id = $2 AND (placement = 1 OR booyah_count > 0)
       ORDER BY booyah_count DESC, placement ASC, total_kills DESC
       LIMIT 1
       `,
-      [sourceResult.rows[0].match_id],
+      [sourceResult.rows[0].match_id, tournamentId],
     );
 
     if (!result.rows.length) {
@@ -1354,8 +1418,8 @@ router.get("/booyah-result/:id", async (req, res) => {
       [result.rows[0].id],
       baseUrl,
     );
-    const booyahAssetImage = await getBooyahAssetImage(baseUrl);
-    const bannerIndex = await buildTeamBannerIndex(baseUrl);
+    const booyahAssetImage = await getBooyahAssetImage(baseUrl, tournamentId);
+    const bannerIndex = await buildTeamBannerIndex(baseUrl, tournamentId);
     const team = formatResultRowWithPlayers(
       result.rows[0],
       baseUrl,
@@ -1419,6 +1483,7 @@ router.post("/by-match-ids", async (req, res) => {
 router.delete("/:matchId", async (req, res) => {
   try {
     await ensureMatchResultsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const matchId = toNullableString(req.params.matchId);
     if (!matchId) {
@@ -1429,8 +1494,8 @@ router.delete("/:matchId", async (req, res) => {
     }
 
     const result = await pool.query(
-      "DELETE FROM match_results WHERE match_id = $1 RETURNING id, match_id, team_id",
-      [matchId],
+      "DELETE FROM match_results WHERE match_id = $1 AND tournament_id = $2 RETURNING id, match_id, team_id",
+      [matchId, tournamentId],
     );
 
     return res.json({

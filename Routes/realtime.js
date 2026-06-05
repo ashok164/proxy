@@ -13,6 +13,10 @@ const {
   saveMatchPlayers,
 } = require("../Data/matchMetadata");
 const { resolveTeamIdentities } = require("../Data/teamIdentityVerifier");
+const {
+  getTournamentIdFromRequest,
+  hasExplicitTournamentSlug,
+} = require("../Data/tournamentContext");
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -108,6 +112,8 @@ const normalizeTeamIdKey = (value) => {
 
 const getTeamId = (team = {}) =>
   firstValue(
+    team.permanent_team_id,
+    team.permanentTeamId,
     team.team_id,
     team.id,
     team.teamId,
@@ -263,12 +269,15 @@ const addMetaToIndex = (index, meta) => {
   if (teamIdKey) index[teamIdKey] = meta;
 };
 
-const buildTeamMetaIndex = async () => {
+const buildTeamMetaIndex = async (tournamentId = null) => {
   const index = {};
 
   try {
     const result = await pool.query(
-      "SELECT team_id, team_name, short_tag, team_logo, country_logo FROM teams",
+      `SELECT team_id, permanent_team_id, team_name, short_tag, team_logo, country_logo
+       FROM teams
+       WHERE $1::integer IS NULL OR tournament_id = $1`,
+      [tournamentId],
     );
 
     for (const meta of result.rows) {
@@ -281,17 +290,17 @@ const buildTeamMetaIndex = async () => {
   return index;
 };
 
-const getBooyahAssetImage = async () => {
+const getBooyahAssetImage = async (tournamentId = null) => {
   try {
     const result = await pool.query(
       `
       SELECT image_url
       FROM tournament_assets
-      WHERE asset_id = $1 AND active = true
+      WHERE asset_id = $1 AND active = true AND ($2::integer IS NULL OR tournament_id = $2)
       ORDER BY id DESC
       LIMIT 1
       `,
-      ["1"],
+      ["1", tournamentId],
     );
 
     return formatUploadUri(result.rows[0]?.image_url || "");
@@ -312,7 +321,7 @@ const addBannerToIndex = (index, row, key) => {
   index[teamIdKey][key] = formatUploadUri(row.image_url);
 };
 
-const buildTeamBannerIndex = async () => {
+const buildTeamBannerIndex = async (tournamentId = null) => {
   const index = {};
 
   try {
@@ -320,8 +329,9 @@ const buildTeamBannerIndex = async () => {
       SELECT team_id, image_url
       FROM full_team_banners
       WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+        AND ($1::integer IS NULL OR tournament_id = $1)
       ORDER BY id DESC
-    `);
+    `, [tournamentId]);
 
     for (const row of fullBannerResult.rows) {
       addBannerToIndex(index, row, "fullTeamBanner");
@@ -337,8 +347,9 @@ const buildTeamBannerIndex = async () => {
       SELECT team_id, image_url
       FROM notification_team_banners
       WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
+        AND ($1::integer IS NULL OR tournament_id = $1)
       ORDER BY id DESC
-    `);
+    `, [tournamentId]);
 
     for (const row of notificationBannerResult.rows) {
       addBannerToIndex(index, row, "notificationTeamBanner");
@@ -352,20 +363,71 @@ const buildTeamBannerIndex = async () => {
   return index;
 };
 
+const ensureTournamentSettingsTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tournament_settings (
+      id SERIAL PRIMARY KEY,
+      tournament_id INTEGER,
+      overall_ranking_enabled BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS overall_ranking_enabled BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tournament_settings_tournament_unique
+    ON tournament_settings(tournament_id)
+  `);
+};
+
+const toBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const clean = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(clean)) return true;
+  if (["false", "0", "no", "off"].includes(clean)) return false;
+  return fallback;
+};
+
+const getTournamentSettings = async (tournamentId = null) => {
+  await ensureTournamentSettingsTable();
+  const result = await pool.query(
+    `
+    INSERT INTO tournament_settings (tournament_id, updated_at)
+    VALUES ($1, NOW())
+    ON CONFLICT (tournament_id) DO UPDATE
+    SET updated_at = tournament_settings.updated_at
+    RETURNING overall_ranking_enabled
+    `,
+    [tournamentId],
+  );
+
+  return {
+    overallRankingEnabled: Boolean(result.rows[0]?.overall_ranking_enabled),
+    overall_ranking_enabled: Boolean(result.rows[0]?.overall_ranking_enabled),
+  };
+};
+
 const resolvePermanentTeamId = (roomTeamIdKey, roomTeamMap = {}) =>
   roomTeamMap[roomTeamIdKey] || "";
 
-const buildHistoricalLeaderboardIndex = async (activeMatchId) => {
+const buildHistoricalLeaderboardIndex = async (activeMatchId, tournamentId = null) => {
   const index = {};
 
   const result = await pool.query(
     `
     SELECT
-      t.team_id,
+      COALESCE(t.permanent_team_id, t.team_id) AS team_id,
+      t.team_id AS display_team_id,
       t.team_name,
       t.short_tag,
       t.team_logo,
       t.country_logo,
+      t.is_playing,
       COALESCE(SUM(mr.kills), 0) AS kills,
       COALESCE(SUM(mr.placement), 0) AS placement,
       COALESCE(SUM(mr.booyah_count), 0) AS booyah_count,
@@ -373,16 +435,20 @@ const buildHistoricalLeaderboardIndex = async (activeMatchId) => {
       COUNT(DISTINCT mr.match_id) FILTER (WHERE mr.match_id IS NOT NULL) AS matches_played
     FROM teams t
     LEFT JOIN match_results mr
-      ON mr.team_id = t.team_id
+      ON COALESCE(mr.permanent_team_id, mr.team_id) = COALESCE(t.permanent_team_id, t.team_id)
+      AND mr.tournament_id = t.tournament_id
       AND mr.match_id <> $1
+    WHERE $2::integer IS NULL OR t.tournament_id = $2
     GROUP BY
+      COALESCE(t.permanent_team_id, t.team_id),
       t.team_id,
       t.team_name,
       t.short_tag,
       t.team_logo,
-      t.country_logo
+      t.country_logo,
+      t.is_playing
     `,
-    [activeMatchId],
+    [activeMatchId, tournamentId],
   );
 
   for (const row of result.rows) {
@@ -395,6 +461,7 @@ const buildHistoricalLeaderboardIndex = async (activeMatchId) => {
       teamTag: row.short_tag || "",
       teamLogo: formatUploadUri(row.team_logo),
       countryLogo: formatUploadUri(row.country_logo),
+      isPlaying: Boolean(row.is_playing),
       historicalKills: Number(row.kills),
       historicalPlacement: Number(row.placement),
       historicalBooyahCount: Number(row.booyah_count),
@@ -417,8 +484,10 @@ const buildOverallLeaderboard = async (
   liveTeams = [],
   playerIndex = {},
   bannerIndex = {},
+  tournamentId = null,
+  options = {},
 ) => {
-  const historicalIndex = await buildHistoricalLeaderboardIndex(activeMatchId);
+  const historicalIndex = await buildHistoricalLeaderboardIndex(activeMatchId, tournamentId);
   const liveIndex = {};
 
   for (const team of liveTeams) {
@@ -444,10 +513,16 @@ const buildOverallLeaderboard = async (
     };
   }
 
-  const teamIds = new Set([
-    ...Object.keys(historicalIndex),
-    ...Object.keys(liveIndex),
-  ]);
+  const teamIds = new Set(
+    options.overallRankingEnabled
+      ? [...Object.keys(historicalIndex), ...Object.keys(liveIndex)]
+      : [
+          ...Object.keys(liveIndex),
+          ...Object.entries(historicalIndex)
+            .filter(([, team]) => team.isPlaying)
+            .map(([teamId]) => teamId),
+        ],
+  );
 
   const rows = [...teamIds].map((teamId) => {
     const historical = historicalIndex[teamId] || {
@@ -503,7 +578,7 @@ const buildOverallLeaderboard = async (
       totalKills,
       totalPoints,
       matchesPlayed: historical.matchesPlayed,
-      isPlaying: Boolean(liveIndex[teamId]),
+      isPlaying: Boolean(liveIndex[teamId] || historical.isPlaying),
       players: overallPlayers,
       player_stats: players,
       playerStats: players,
@@ -564,6 +639,7 @@ const ensureMatchResultsTable = async () => {
       id SERIAL PRIMARY KEY,
       match_id TEXT NOT NULL,
       team_id TEXT NOT NULL,
+      permanent_team_id TEXT,
       team_name TEXT,
       team_tag TEXT,
       team_logo TEXT,
@@ -577,6 +653,17 @@ const ensureMatchResultsTable = async () => {
       updated_at TIMESTAMP DEFAULT NOW(),
       CONSTRAINT match_results_match_team_unique UNIQUE (match_id, team_id)
     );
+  `);
+
+  await pool.query(`
+    ALTER TABLE match_results
+    ADD COLUMN IF NOT EXISTS permanent_team_id TEXT;
+  `);
+
+  await pool.query(`
+    UPDATE match_results
+    SET permanent_team_id = team_id
+    WHERE permanent_team_id IS NULL OR TRIM(permanent_team_id) = '';
   `);
 
   await pool.query(`
@@ -629,6 +716,7 @@ const saveRealtimeResultsSnapshot = async (matchId, standings = {}) => {
       INSERT INTO match_results (
         match_id,
         team_id,
+        permanent_team_id,
         team_name,
         team_tag,
         team_logo,
@@ -640,9 +728,10 @@ const saveRealtimeResultsSnapshot = async (matchId, standings = {}) => {
         raw_payload,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
+      VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
       ON CONFLICT (match_id, team_id) DO UPDATE
       SET
+        permanent_team_id = EXCLUDED.permanent_team_id,
         team_name = EXCLUDED.team_name,
         team_tag = EXCLUDED.team_tag,
         team_logo = EXCLUDED.team_logo,
@@ -777,7 +866,7 @@ const compactRealtimeTeam = (team = {}) => {
 
 const normalizePlayerUidKey = (value) => String(value ?? "").trim();
 
-const buildPlayerIndex = async () => {
+const buildPlayerIndex = async (tournamentId = null) => {
   const index = {
     byTeam: {},
     byTeamAndUid: {},
@@ -785,7 +874,11 @@ const buildPlayerIndex = async () => {
 
   try {
     const result = await pool.query(
-      "SELECT id, team_id, player_uid, player_name, camera_link, player_pic FROM team_players ORDER BY id DESC",
+      `SELECT id, team_id, player_uid, player_name, camera_link, player_pic
+       FROM team_players
+       WHERE $1::integer IS NULL OR tournament_id = $1
+       ORDER BY id DESC`,
+      [tournamentId],
     );
 
     for (const player of result.rows) {
@@ -1117,9 +1210,9 @@ const mergeTeam = (
   return mergedTeam;
 };
 
-const buildStandings = async (id, logoCache = {}) => {
+const buildStandings = async (id, logoCache = {}, tournamentId = null) => {
   const data = await fetchMatch(id);
-  const meta = await getRealtimeMeta();
+  const meta = await getRealtimeMeta(tournamentId);
   const {
     metaIndex,
     playerIndex,
@@ -1129,6 +1222,7 @@ const buildStandings = async (id, logoCache = {}) => {
   } = meta;
   const externalPlayerStats = getPlayerStats(data);
   const rawTeams = getTeams(data);
+  const settings = await getTournamentSettings(tournamentId);
   const {
     roomTeamMap,
     corrections: teamIdentityMatches,
@@ -1142,6 +1236,8 @@ const buildStandings = async (id, logoCache = {}) => {
         ? team.player_stats
         : filterPlayerStatsByTeam(externalPlayerStats, normalizeTeamIdKey(getTeamId(team))),
     normalizeTeamId: normalizeTeamIdKey,
+    tournamentId,
+    playingOnly: true,
   });
   const teams = rawTeams.map((team) =>
     mergeTeam(
@@ -1161,17 +1257,21 @@ const buildStandings = async (id, logoCache = {}) => {
     teams,
     playerIndex,
     bannerIndex,
+    tournamentId,
+    settings,
   );
-  const liveStandings = teams.map(compactRealtimeTeam);
+  const liveMatchStandings = teams.map(compactRealtimeTeam);
   const liveOverall = overallLeaderboard.map(compactRealtimeTeam);
 
   return {
     success: true,
     matchId: id,
     schema: "realtime.v2",
+    settings,
     teamIdentityMatches,
     teamIdentityDetections,
-    liveStandings2: liveStandings,
+    liveStandings2: liveOverall,
+    liveMatchStandings,
     liveOverall,
     standings: teams,
     overall: overallLeaderboard,
@@ -1192,22 +1292,32 @@ const buildLiveBroadcastPayload = (standings = {}) => ({
   matchId: standings.matchId,
   teamIdentityMatches: standings.teamIdentityMatches || [],
   liveStandings2: standings.liveStandings2 || [],
+  liveMatchStandings: standings.liveMatchStandings || [],
   liveOverall: standings.liveOverall || [],
 });
 
-const getRealtimeMeta = async () => {
+const getRealtimeMeta = async (tournamentId = null) => {
   const now = Date.now();
-  if (realtimeMetaCache.data && realtimeMetaCache.expiresAt > now) {
-    return realtimeMetaCache.data;
+  const cacheKey = String(tournamentId || "default");
+  const cachedData = realtimeMetaCache.data?.[cacheKey];
+  if (cachedData && realtimeMetaCache.expiresAt > now) {
+    return cachedData;
   }
 
-  if (realtimeMetaCache.promise) return realtimeMetaCache.promise;
+  if (realtimeMetaCache.promise?.[cacheKey]) return realtimeMetaCache.promise[cacheKey];
 
-  realtimeMetaCache.promise = Promise.all([
-    buildTeamMetaIndex(),
-    buildPlayerIndex(),
-    buildTeamBannerIndex(),
-    getBooyahAssetImage(),
+  if (!realtimeMetaCache.promise || typeof realtimeMetaCache.promise.then === "function") {
+    realtimeMetaCache.promise = {};
+  }
+  if (!realtimeMetaCache.data || typeof realtimeMetaCache.data.then === "function") {
+    realtimeMetaCache.data = {};
+  }
+
+  realtimeMetaCache.promise[cacheKey] = Promise.all([
+    buildTeamMetaIndex(tournamentId),
+    buildPlayerIndex(tournamentId),
+    buildTeamBannerIndex(tournamentId),
+    getBooyahAssetImage(tournamentId),
     buildAssetLookup(pool, process.env.BASE_URL || "http://82.29.155.252:3000"),
   ])
     .then(([metaIndex, playerIndex, bannerIndex, booyahAssetImage, assetLookup]) => {
@@ -1218,21 +1328,26 @@ const getRealtimeMeta = async () => {
         booyahAssetImage,
         assetLookup,
       };
-      realtimeMetaCache.data = data;
+      realtimeMetaCache.data[cacheKey] = data;
       realtimeMetaCache.expiresAt = Date.now() + getMetaCacheTtlMs();
       return data;
     })
     .finally(() => {
-      realtimeMetaCache.promise = null;
+      if (realtimeMetaCache.promise) delete realtimeMetaCache.promise[cacheKey];
     });
 
-  return realtimeMetaCache.promise;
+  return realtimeMetaCache.promise[cacheKey];
 };
 
 /* ================= CENTRAL DATA STREAM ENGINE ================= */
-const startCentralEngine = (matchId) => {
-  if (!matchCache[matchId]) {
-    matchCache[matchId] = {
+const getMatchCacheKey = (matchId, tournamentId = null) =>
+  `${tournamentId || "default"}:${matchId}`;
+
+const startCentralEngine = (matchId, tournamentId = null) => {
+  const cacheKey = getMatchCacheKey(matchId, tournamentId);
+
+  if (!matchCache[cacheKey]) {
+    matchCache[cacheKey] = {
       clients: new Set(),
       rawJsonData: null,
       latestFrame: null,
@@ -1245,14 +1360,14 @@ const startCentralEngine = (matchId) => {
     };
   }
 
-  if (matchCache[matchId].timerId || matchCache[matchId].refreshing) return;
+  if (matchCache[cacheKey].timerId || matchCache[cacheKey].refreshing) return;
 
   console.log(
     `🌀 [ENGINE START] Initializing centralized data worker loop for Match ID: ${matchId}`,
   );
 
   const tick = async () => {
-    const entry = matchCache[matchId];
+    const entry = matchCache[cacheKey];
 
     if (entry.clients.size === 0 && Date.now() - entry.lastActive > 30000) {
       console.log(
@@ -1267,7 +1382,7 @@ const startCentralEngine = (matchId) => {
     entry.timerId = null;
 
     try {
-      const standings = await buildStandings(matchId, entry.logoCache);
+      const standings = await buildStandings(matchId, entry.logoCache, tournamentId);
       entry.rawJsonData = standings;
 
       const jsonString = JSON.stringify({
@@ -1321,15 +1436,28 @@ const frameWSFrame = (payload) => {
 
 const parseWS = (url = "") => {
   if (!url) return null;
-  // Match both standard types and route alternatives safely
-  const match = url.match(/\/(?:ws\/)?(realtime|tablestandings)\/([^/?#]+)/);
+  // Supports /realtime/:matchId and /:tournamentSlug/realtime/:matchId.
+  const match = url.match(
+    /\/(?:(?<tournamentSlug>[a-z0-9][a-z0-9-]*)\/)?(?:ws\/)?(?<type>realtime|tablestandings)\/(?<matchId>[^/?#]+)/i,
+  );
   if (!match) return null;
-  return { type: match[1], matchId: match[2].trim() };
+  return {
+    type: match.groups.type,
+    matchId: match.groups.matchId.trim(),
+    tournamentSlug: match.groups.tournamentSlug,
+  };
 };
 
-const handleWS = (req, socket) => {
+const handleWS = async (req, socket) => {
   const route = parseWS(req.url);
   if (!route || !route.matchId || route.matchId === "undefined") return false;
+
+  const parsedUrl = new URL(req.url, "http://localhost");
+  req.query = { ...(req.query || {}), ...Object.fromEntries(parsedUrl.searchParams.entries()) };
+  if (route.tournamentSlug) {
+    req.params = { ...(req.params || {}), tournamentSlug: route.tournamentSlug };
+  }
+  if (!hasExplicitTournamentSlug(req)) return false;
 
   const key = req.headers["sec-websocket-key"];
   if (!key) return false;
@@ -1347,11 +1475,13 @@ const handleWS = (req, socket) => {
   );
 
   const matchId = route.matchId;
+  const tournamentId = await getTournamentIdFromRequest(pool, req);
+  const cacheKey = getMatchCacheKey(matchId, tournamentId);
   console.log(`🚀 Client joined WebSocket pool for Match ID: ${matchId}`);
 
-  startCentralEngine(matchId);
+  startCentralEngine(matchId, tournamentId);
 
-  const entry = matchCache[matchId];
+  const entry = matchCache[cacheKey];
   entry.clients.add(socket);
   entry.lastActive = Date.now();
 
@@ -1361,8 +1491,8 @@ const handleWS = (req, socket) => {
 
   const cleanUp = () => {
     console.log(`🔌 Client disconnected from Match ID: ${matchId}`);
-    if (matchCache[matchId]) {
-      matchCache[matchId].clients.delete(socket);
+    if (matchCache[cacheKey]) {
+      matchCache[cacheKey].clients.delete(socket);
     }
   };
 
@@ -1403,19 +1533,79 @@ router.get("/raw/:matchId", async (req, res) => {
   }
 });
 
+router.get("/settings", async (req, res) => {
+  try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    const settings = await getTournamentSettings(tournamentId);
+    return res.json({ success: true, data: settings });
+  } catch (err) {
+    console.error("Realtime settings fetch failed:", err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.patch("/settings", async (req, res) => {
+  try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureTournamentSettingsTable();
+    const overallRankingEnabled = toBoolean(
+      req.body.overallRankingEnabled ?? req.body.overall_ranking_enabled,
+      false,
+    );
+    const result = await pool.query(
+      `
+      INSERT INTO tournament_settings (tournament_id, overall_ranking_enabled, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (tournament_id) DO UPDATE
+      SET overall_ranking_enabled = EXCLUDED.overall_ranking_enabled,
+          updated_at = NOW()
+      RETURNING overall_ranking_enabled
+      `,
+      [tournamentId, overallRankingEnabled],
+    );
+    const enabled = Boolean(result.rows[0]?.overall_ranking_enabled);
+    return res.json({
+      success: true,
+      data: {
+        overallRankingEnabled: enabled,
+        overall_ranking_enabled: enabled,
+      },
+    });
+  } catch (err) {
+    console.error("Realtime settings update failed:", err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.get(
-  ["/ws/realtime/:matchId", "/realtime/:matchId", "/tablestandings/:matchId"],
+  [
+    "/ws/realtime/:matchId",
+    "/realtime/:matchId",
+    "/tablestandings/:matchId",
+    "/:tournamentSlug/ws/realtime/:matchId",
+    "/:tournamentSlug/realtime/:matchId",
+    "/:tournamentSlug/tablestandings/:matchId",
+  ],
   async (req, res) => {
     try {
       const matchId = req.params.matchId;
+      if (!hasExplicitTournamentSlug(req)) {
+        return res.status(400).json({
+          success: false,
+          message: "Tournament slug is required for realtime table views",
+        });
+      }
 
-      if (matchCache[matchId]) {
-        matchCache[matchId].lastActive = Date.now();
-        if (matchCache[matchId].rawJsonData) {
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
+      const cacheKey = getMatchCacheKey(matchId, tournamentId);
+
+      if (matchCache[cacheKey]) {
+        matchCache[cacheKey].lastActive = Date.now();
+        if (matchCache[cacheKey].rawJsonData) {
           return res.json({
             success: true,
             type: "tablestandings_cached",
-            data: matchCache[matchId].rawJsonData,
+            data: matchCache[cacheKey].rawJsonData,
           });
         }
       }
@@ -1423,15 +1613,16 @@ router.get(
       console.log(
         `🌐 Cache miss. Instantiating live polling engine for Match: ${matchId}`,
       );
-      startCentralEngine(matchId);
+      startCentralEngine(matchId, tournamentId);
 
       const standingsData = await buildStandings(
         matchId,
-        matchCache[matchId]?.logoCache || {},
+        matchCache[cacheKey]?.logoCache || {},
+        tournamentId,
       );
-      if (matchCache[matchId]) {
-        matchCache[matchId].rawJsonData = standingsData;
-        matchCache[matchId].latestFrame = frameWSFrame(
+      if (false && matchCache[cacheKey]) {
+        matchCache[cacheKey].rawJsonData = standingsData;
+        matchCache[cacheKey].latestFrame = frameWSFrame(
           JSON.stringify({
             type: "tablestandings",
             data: buildLiveBroadcastPayload(standingsData),
@@ -1451,5 +1642,6 @@ router.get(
 );
 
 router.handleRealtimeWebSocket = handleWS;
-router.getCachedStandings = (matchId) => matchCache[matchId]?.rawJsonData || null;
+router.getCachedStandings = (matchId, tournamentId = null) =>
+  matchCache[getMatchCacheKey(matchId, tournamentId)]?.rawJsonData || null;
 module.exports = router;

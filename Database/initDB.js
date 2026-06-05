@@ -1,16 +1,42 @@
 const pool = require("./db");
+const { dropConstraintWithDependents } = require("./schemaMigrations");
+const {
+  DEFAULT_TOURNAMENT_NAME,
+  DEFAULT_TOURNAMENT_SLUG,
+} = require("../Data/tournamentContext");
 
 const initDB = async () => {
   try {
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS tournaments (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT UNIQUE NOT NULL,
+        domain TEXT,
+        pull_tournament_assets BOOLEAN NOT NULL DEFAULT false,
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      ALTER TABLE tournaments
+      ADD COLUMN IF NOT EXISTS pull_tournament_assets BOOLEAN NOT NULL DEFAULT false;
+    `);
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS teams (
         id SERIAL PRIMARY KEY,
         rank TEXT,
-        team_id TEXT UNIQUE NOT NULL,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
+        team_id TEXT NOT NULL,
+        permanent_team_id TEXT,
         team_name TEXT,
         short_tag TEXT,
         team_logo TEXT,
         country_logo TEXT,
+        is_playing BOOLEAN NOT NULL DEFAULT false,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
@@ -19,6 +45,7 @@ const initDB = async () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS team_players (
         id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         team_id TEXT NOT NULL,
         player_uid TEXT,
         player_name TEXT,
@@ -33,7 +60,8 @@ const initDB = async () => {
       CREATE TABLE IF NOT EXISTS country_logos (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL DEFAULT '',
-        image_path TEXT UNIQUE NOT NULL,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
+        image_path TEXT NOT NULL,
         file_name TEXT,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
@@ -55,6 +83,7 @@ const initDB = async () => {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS ${table} (
           id SERIAL PRIMARY KEY,
+          tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
           team_id TEXT,
           asset_id TEXT,
           name TEXT,
@@ -70,7 +99,8 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS theme_colors (
-        id INTEGER PRIMARY KEY DEFAULT 1,
+        id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         use_default_colors BOOLEAN NOT NULL DEFAULT false,
         primary_color TEXT,
         secondary_color TEXT,
@@ -85,35 +115,35 @@ const initDB = async () => {
         warning_color TEXT,
         danger_color TEXT,
         created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
-        CONSTRAINT theme_colors_single_row CHECK (id = 1)
+        updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS circle_analysis (
-        id INTEGER PRIMARY KEY DEFAULT 1,
+        id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         circles JSONB NOT NULL DEFAULT '[1,2,3,4,5,6,7,8]'::jsonb,
         teams JSONB NOT NULL DEFAULT '[]'::jsonb,
         created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
-        CONSTRAINT circle_analysis_single_row CHECK (id = 1)
+        updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS zone_shrink_state (
-        id INTEGER PRIMARY KEY DEFAULT 1,
+        id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         active BOOLEAN NOT NULL DEFAULT false,
         created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
-        CONSTRAINT zone_shrink_state_single_row CHECK (id = 1)
+        updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS game_details (
         id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         game_id TEXT,
         game_number TEXT,
         game_name TEXT,
@@ -133,8 +163,10 @@ const initDB = async () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS match_results (
         id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         match_id TEXT NOT NULL,
         team_id TEXT NOT NULL,
+        permanent_team_id TEXT,
         team_name TEXT,
         team_tag TEXT,
         team_logo TEXT,
@@ -145,17 +177,18 @@ const initDB = async () => {
         total_kills INTEGER NOT NULL DEFAULT 0,
         raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
-        CONSTRAINT match_results_match_team_unique UNIQUE (match_id, team_id)
+        updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS match_result_players (
         id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         match_result_id INTEGER REFERENCES match_results(id) ON DELETE CASCADE,
         match_id TEXT NOT NULL,
         team_id TEXT NOT NULL,
+        permanent_team_id TEXT,
         player_id TEXT,
         player_name TEXT,
         player_image TEXT,
@@ -170,8 +203,7 @@ const initDB = async () => {
         pet_asset_id TEXT,
         raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
-        CONSTRAINT match_result_players_unique UNIQUE (match_id, team_id, player_id)
+        updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
@@ -225,7 +257,7 @@ const initDB = async () => {
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
     role VARCHAR(20) NOT NULL DEFAULT 'user',
-    is_active BOOLEAN NOT NULL DEFAULT true,
+    is_active BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
   );
@@ -244,6 +276,54 @@ const initDB = async () => {
     await pool.query(`
       ALTER TABLE teams
       ADD COLUMN IF NOT EXISTS rank TEXT;
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tournament_settings (
+        id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
+        overall_ranking_enabled BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      ALTER TABLE teams
+      ADD COLUMN IF NOT EXISTS is_playing BOOLEAN NOT NULL DEFAULT false;
+    `);
+
+    await pool.query(`
+      ALTER TABLE teams
+      ADD COLUMN IF NOT EXISTS permanent_team_id TEXT;
+    `);
+
+    await pool.query(`
+      UPDATE teams
+      SET permanent_team_id = team_id
+      WHERE permanent_team_id IS NULL OR TRIM(permanent_team_id) = '';
+    `);
+
+    await pool.query(`
+      ALTER TABLE match_results
+      ADD COLUMN IF NOT EXISTS permanent_team_id TEXT;
+    `);
+
+    await pool.query(`
+      UPDATE match_results
+      SET permanent_team_id = team_id
+      WHERE permanent_team_id IS NULL OR TRIM(permanent_team_id) = '';
+    `);
+
+    await pool.query(`
+      ALTER TABLE match_result_players
+      ADD COLUMN IF NOT EXISTS permanent_team_id TEXT;
+    `);
+
+    await pool.query(`
+      UPDATE match_result_players
+      SET permanent_team_id = team_id
+      WHERE permanent_team_id IS NULL OR TRIM(permanent_team_id) = '';
     `);
 
     await pool.query(`
@@ -319,6 +399,125 @@ const initDB = async () => {
       );
     }
 
+    await pool.query(
+      `
+      INSERT INTO tournaments (name, slug, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (slug) DO UPDATE
+      SET name = EXCLUDED.name, updated_at = NOW();
+      `,
+      [DEFAULT_TOURNAMENT_NAME, DEFAULT_TOURNAMENT_SLUG],
+    );
+
+    const defaultTournamentResult = await pool.query(
+      "SELECT id FROM tournaments WHERE slug = $1 LIMIT 1",
+      [DEFAULT_TOURNAMENT_SLUG],
+    );
+    const defaultTournamentId = defaultTournamentResult.rows[0].id;
+
+    for (const table of [
+      "teams",
+      "team_players",
+      "country_logos",
+      "weapons",
+      "characters",
+      "skills",
+      "pets",
+      "roles",
+      "equipment",
+      "tournament_logos",
+      "full_team_banners",
+      "notification_team_banners",
+      "tournament_assets",
+      "theme_colors",
+      "circle_analysis",
+      "zone_shrink_state",
+      "tournament_settings",
+      "game_details",
+      "match_results",
+      "match_result_players",
+    ]) {
+      await pool.query(`
+        ALTER TABLE ${table}
+        ADD COLUMN IF NOT EXISTS tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE;
+      `);
+      await pool.query(
+        `UPDATE ${table} SET tournament_id = $1 WHERE tournament_id IS NULL`,
+        [defaultTournamentId],
+      );
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_${table}_tournament_id
+        ON ${table}(tournament_id);
+      `);
+    }
+
+    await dropConstraintWithDependents(pool, "teams", "teams_team_id_key");
+
+    for (const statement of [
+      "ALTER TABLE country_logos DROP CONSTRAINT IF EXISTS country_logos_image_path_key",
+      "ALTER TABLE match_results DROP CONSTRAINT IF EXISTS match_results_match_team_unique",
+      "ALTER TABLE match_result_players DROP CONSTRAINT IF EXISTS match_result_players_unique",
+      "ALTER TABLE theme_colors DROP CONSTRAINT IF EXISTS theme_colors_single_row",
+      "ALTER TABLE circle_analysis DROP CONSTRAINT IF EXISTS circle_analysis_single_row",
+      "ALTER TABLE zone_shrink_state DROP CONSTRAINT IF EXISTS zone_shrink_state_single_row",
+      "DROP INDEX IF EXISTS idx_match_results_match_team_unique",
+    ]) {
+      await pool.query(statement);
+    }
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_tournament_team_id_unique
+      ON teams(tournament_id, team_id);
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_tournament_permanent_team_id_unique
+      ON teams(tournament_id, permanent_team_id)
+      WHERE permanent_team_id IS NOT NULL AND TRIM(permanent_team_id) <> '';
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_country_logos_tournament_image_path_unique
+      ON country_logos(tournament_id, image_path);
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_theme_colors_tournament_unique
+      ON theme_colors(tournament_id);
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_circle_analysis_tournament_unique
+      ON circle_analysis(tournament_id);
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_zone_shrink_state_tournament_unique
+      ON zone_shrink_state(tournament_id);
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tournament_settings_tournament_unique
+      ON tournament_settings(tournament_id);
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tournament_users (
+        id SERIAL PRIMARY KEY,
+        tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL DEFAULT 'viewer',
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT tournament_users_unique UNIQUE (tournament_id, user_id)
+      );
+    `);
+
+    await pool.query(`
+      ALTER TABLE users
+      ALTER COLUMN is_active SET DEFAULT false;
+    `);
+
     // optional but recommended for esports realtime performance
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_team_id ON teams(team_id);
@@ -338,6 +537,18 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_tournaments_slug ON tournaments(slug);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_tournament_users_user_id ON tournament_users(user_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_tournament_users_tournament_id ON tournament_users(tournament_id);
     `);
 
     await pool.query(`
@@ -361,6 +572,11 @@ const initDB = async () => {
     `);
 
     await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_match_results_permanent_team_id
+      ON match_results(permanent_team_id);
+    `);
+
+    await pool.query(`
       DELETE FROM match_results mr
       USING match_results duplicate
       WHERE
@@ -371,7 +587,7 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_match_results_match_team_unique
-      ON match_results(match_id, team_id);
+      ON match_results(tournament_id, match_id, team_id);
     `);
 
     await pool.query(`
@@ -380,6 +596,11 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_match_result_players_team_id ON match_result_players(team_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_match_result_players_permanent_team_id
+      ON match_result_players(permanent_team_id);
     `);
 
   } catch (err) {

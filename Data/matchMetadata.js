@@ -339,9 +339,11 @@ const ensureMatchMetadataTables = async (pool) => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS match_result_players (
       id SERIAL PRIMARY KEY,
+      tournament_id INTEGER,
       match_result_id INTEGER REFERENCES match_results(id) ON DELETE CASCADE,
       match_id TEXT NOT NULL,
       team_id TEXT NOT NULL,
+      permanent_team_id TEXT,
       player_id TEXT,
       player_name TEXT,
       player_image TEXT,
@@ -356,9 +358,23 @@ const ensureMatchMetadataTables = async (pool) => {
       pet_asset_id TEXT,
       raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW(),
-      CONSTRAINT match_result_players_unique UNIQUE (match_id, team_id, player_id)
+      updated_at TIMESTAMP DEFAULT NOW()
     );
+  `);
+  await ensureTournamentColumn(pool, "match_result_players");
+  await pool.query(`
+    ALTER TABLE match_result_players
+    ADD COLUMN IF NOT EXISTS permanent_team_id TEXT
+  `);
+  await pool.query(`
+    UPDATE match_result_players
+    SET permanent_team_id = team_id
+    WHERE permanent_team_id IS NULL OR TRIM(permanent_team_id) = ''
+  `);
+  await pool.query("ALTER TABLE match_result_players DROP CONSTRAINT IF EXISTS match_result_players_unique");
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_match_result_players_tournament_unique
+    ON match_result_players(tournament_id, match_id, team_id, player_id);
   `);
 
   await pool.query(`
@@ -394,7 +410,14 @@ const ensureMatchMetadataTables = async (pool) => {
   `);
 };
 
-const saveMatchPlayers = async (pool, matchResultId, matchId, teamId, players = []) => {
+const saveMatchPlayers = async (
+  pool,
+  matchResultId,
+  matchId,
+  teamId,
+  players = [],
+  tournamentId = null,
+) => {
   await ensureMatchMetadataTables(pool);
 
   for (const playerPayload of players) {
@@ -404,9 +427,11 @@ const saveMatchPlayers = async (pool, matchResultId, matchId, teamId, players = 
     const playerResult = await pool.query(
       `
       INSERT INTO match_result_players (
+        tournament_id,
         match_result_id,
         match_id,
         team_id,
+        permanent_team_id,
         player_id,
         player_name,
         player_image,
@@ -422,10 +447,11 @@ const saveMatchPlayers = async (pool, matchResultId, matchId, teamId, players = 
         raw_payload,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, NOW())
-      ON CONFLICT (match_id, team_id, player_id) DO UPDATE
+      VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, NOW())
+      ON CONFLICT (tournament_id, match_id, team_id, player_id) DO UPDATE
       SET
         match_result_id = EXCLUDED.match_result_id,
+        permanent_team_id = EXCLUDED.permanent_team_id,
         player_name = EXCLUDED.player_name,
         player_image = EXCLUDED.player_image,
         kills = EXCLUDED.kills,
@@ -442,6 +468,7 @@ const saveMatchPlayers = async (pool, matchResultId, matchId, teamId, players = 
       RETURNING *
       `,
       [
+        tournamentId,
         matchResultId,
         matchId,
         teamId,
@@ -879,3 +906,4 @@ module.exports = {
   saveMatchPlayers,
   toInteger,
 };
+const { ensureTournamentColumn } = require("./tournamentContext");

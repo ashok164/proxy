@@ -4,8 +4,12 @@ const path = require("path");
 const fs = require("fs");
 
 const pool = require("../Database/db");
+const {
+  ensureTournamentColumn,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 const uploadPath = path.join(__dirname, "../uploads");
 const PLAYER_UPLOAD_DIR = "players";
@@ -191,6 +195,9 @@ let playerColumnsReady = false;
 const ensurePlayerColumns = async () => {
   if (playerColumnsReady) return;
 
+  await ensureTournamentColumn(pool, "team_players");
+  await ensureTournamentColumn(pool, "teams");
+
   await pool.query(`
     ALTER TABLE team_players
     ADD COLUMN IF NOT EXISTS player_uid TEXT
@@ -231,6 +238,7 @@ router.post("/team-players", upload.any(), async (req, res) => {
 
   try {
     await ensurePlayerColumns();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const teamIds = toArray(getBodyValue(req.body, "teamId", "team_id"));
     const players = parsePlayersPayload(req.body);
@@ -267,6 +275,7 @@ router.post("/team-players", upload.any(), async (req, res) => {
         `
   WITH inserted_player AS (
     INSERT INTO team_players (
+      tournament_id,
       team_id,
       player_uid,
       player_name,
@@ -274,7 +283,7 @@ router.post("/team-players", upload.any(), async (req, res) => {
       player_pic,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, NOW())
     RETURNING *
   )
 
@@ -287,9 +296,10 @@ router.post("/team-players", upload.any(), async (req, res) => {
     t.rank
   FROM inserted_player ip
   LEFT JOIN teams t
-    ON t.team_id = ip.team_id
+    ON t.team_id = ip.team_id AND t.tournament_id = ip.tournament_id
   `,
         [
+          tournamentId,
           teamId,
           playerUid,
           playerName,
@@ -320,6 +330,8 @@ router.post("/team-players", upload.any(), async (req, res) => {
 router.get("/view-team-player", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
+    await ensurePlayerColumns();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
     const teamId = normalizeTeamId(req.query.team_id || req.query.teamId);
 
     const result = teamId
@@ -334,11 +346,11 @@ router.get("/view-team-player", async (req, res) => {
             t.rank
           FROM team_players tp
           LEFT JOIN teams t
-            ON t.team_id = tp.team_id
-          WHERE tp.team_id = $1
+            ON t.team_id = tp.team_id AND t.tournament_id = tp.tournament_id
+          WHERE tp.team_id = $1 AND tp.tournament_id = $2
           ORDER BY tp.id DESC
           `,
-          [teamId],
+          [teamId, tournamentId],
         )
       : await pool.query(
           `
@@ -351,9 +363,11 @@ router.get("/view-team-player", async (req, res) => {
             t.rank
           FROM team_players tp
           LEFT JOIN teams t
-            ON t.team_id = tp.team_id
+            ON t.team_id = tp.team_id AND t.tournament_id = tp.tournament_id
+          WHERE tp.tournament_id = $1
           ORDER BY tp.id DESC
           `,
+          [tournamentId],
         );
 
     const data = result.rows.map((row) => formatPlayerRow(baseUrl, row));
@@ -372,11 +386,12 @@ router.get("/view-team-player", async (req, res) => {
 router.get("/team-players/by-player-uid/:playerUid", async (req, res) => {
   try {
     await ensurePlayerColumns();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const baseUrl = getBaseUrl(req);
     const result = await pool.query(
-      "SELECT * FROM team_players WHERE player_uid = $1",
-      [req.params.playerUid],
+      "SELECT * FROM team_players WHERE player_uid = $1 AND tournament_id = $2",
+      [req.params.playerUid, tournamentId],
     );
 
     if (!result.rows.length) {
@@ -402,10 +417,11 @@ const updatePlayer = async (req, res, lookupColumn, lookupValue) => {
 
   try {
     await ensurePlayerColumns();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const oldPlayer = await pool.query(
-      `SELECT * FROM team_players WHERE ${lookupColumn} = $1`,
-      [lookupValue],
+      `SELECT * FROM team_players WHERE ${lookupColumn} = $1 AND tournament_id = $2`,
+      [lookupValue, tournamentId],
     );
 
     if (!oldPlayer.rows.length) {
@@ -436,10 +452,10 @@ const updatePlayer = async (req, res, lookupColumn, lookupValue) => {
         camera_link = $4,
         player_pic = $5,
         updated_at = NOW()
-      WHERE ${lookupColumn} = $6
+      WHERE ${lookupColumn} = $6 AND tournament_id = $7
       RETURNING *
       `,
-      [teamId, playerUid, playerName, cameraLink, playerPic, lookupValue],
+      [teamId, playerUid, playerName, cameraLink, playerPic, lookupValue, tournamentId],
     );
 
     if (newPlayerPic && existing.player_pic) {
@@ -479,9 +495,10 @@ router.put("/team-players/:id", upload.any(), async (req, res) => {
 
 const deletePlayer = async (req, res, lookupColumn, lookupValue) => {
   try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
     const result = await pool.query(
-      `DELETE FROM team_players WHERE ${lookupColumn} = $1 RETURNING *`,
-      [lookupValue],
+      `DELETE FROM team_players WHERE ${lookupColumn} = $1 AND tournament_id = $2 RETURNING *`,
+      [lookupValue, tournamentId],
     );
 
     if (!result.rows.length) {
@@ -521,9 +538,10 @@ router.delete("/team-players/by-player-uid/:playerUid", async (req, res) => {
 router.delete("/team-players/by-team-id/:teamId", async (req, res) => {
   try {
     const teamId = normalizeTeamId(req.params.teamId);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
     const result = await pool.query(
-      "DELETE FROM team_players WHERE team_id = $1 RETURNING *",
-      [teamId],
+      "DELETE FROM team_players WHERE team_id = $1 AND tournament_id = $2 RETURNING *",
+      [teamId, tournamentId],
     );
 
     const filesToDelete = [];

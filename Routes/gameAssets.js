@@ -4,8 +4,13 @@ const path = require("path");
 const fs = require("fs");
 
 const pool = require("../Database/db");
+const {
+  ensureTournamentColumn,
+  getTournamentAssetScopeFromRequest,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 const ASSET_MODULES = {
   weapons: {
@@ -344,7 +349,17 @@ const formatRow = (req, row) => ({
   file_name: row.file_name,
   created_at: row.created_at,
   updated_at: row.updated_at,
+  tournament_id: row.tournament_id,
+  source_tournament_id: row.source_tournament_id || row.tournament_id,
+  source_tournament_name: row.source_tournament_name || row.tournament_name || "",
+  source_tournament_slug: row.source_tournament_slug || row.tournament_slug || "",
+  is_shared: Boolean(row.is_shared),
+  read_only: Boolean(row.read_only || row.is_shared),
 });
+
+const ensureAssetTableScope = async (table) => {
+  await ensureTournamentColumn(pool, table);
+};
 
 const deleteUploadedFiles = (files = []) => {
   for (const file of files) {
@@ -409,6 +424,8 @@ router.post("/:moduleName/create", uploadAny, async (req, res) => {
   }
 
   try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureAssetTableScope(config.table);
     const items = parseItemsPayload(req.body);
     const rows = [];
 
@@ -422,6 +439,7 @@ router.post("/:moduleName/create", uploadAny, async (req, res) => {
       const result = await pool.query(
         `
         INSERT INTO ${config.table} (
+          tournament_id,
           team_id,
           asset_id,
           name,
@@ -431,10 +449,11 @@ router.post("/:moduleName/create", uploadAny, async (req, res) => {
           file_name,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
         RETURNING *
         `,
         [
+          tournamentId,
           toNullableString(input.teamId),
           toNullableString(input.assetId),
           toNullableString(input.name),
@@ -469,9 +488,39 @@ router.get("/:moduleName/all", async (req, res) => {
   const config = ASSET_MODULES[moduleName];
 
   try {
-    const result = await pool.query(
-      `SELECT * FROM ${config.table} ORDER BY id ASC`,
-    );
+    const { tournamentId, pullTournamentAssets } = await getTournamentAssetScopeFromRequest(pool, req);
+    await ensureAssetTableScope(config.table);
+    const result = pullTournamentAssets
+      ? await pool.query(
+          `
+          SELECT
+            assets.*,
+            source.name AS source_tournament_name,
+            source.slug AS source_tournament_slug,
+            (assets.tournament_id <> $1) AS is_shared,
+            (assets.tournament_id <> $1) AS read_only
+          FROM ${config.table} assets
+          JOIN tournaments source ON source.id = assets.tournament_id
+          WHERE source.is_active = true
+          ORDER BY is_shared ASC, assets.id ASC
+          `,
+          [tournamentId],
+        )
+      : await pool.query(
+          `
+          SELECT
+            assets.*,
+            source.name AS source_tournament_name,
+            source.slug AS source_tournament_slug,
+            false AS is_shared,
+            false AS read_only
+          FROM ${config.table} assets
+          LEFT JOIN tournaments source ON source.id = assets.tournament_id
+          WHERE assets.tournament_id = $1
+          ORDER BY assets.id ASC
+          `,
+          [tournamentId],
+        );
 
     return res.json({
       success: true,
@@ -490,9 +539,11 @@ router.put("/:moduleName/update/:id", uploadAny, async (req, res) => {
   const newImage = files[0];
 
   try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureAssetTableScope(config.table);
     const existingResult = await pool.query(
-      `SELECT * FROM ${config.table} WHERE id = $1`,
-      [id],
+      `SELECT * FROM ${config.table} WHERE id = $1 AND tournament_id = $2`,
+      [id, tournamentId],
     );
 
     if (!existingResult.rows.length) {
@@ -520,7 +571,7 @@ router.put("/:moduleName/update/:id", uploadAny, async (req, res) => {
         image_url = $6,
         file_name = $7,
         updated_at = NOW()
-      WHERE id = $8
+      WHERE id = $8 AND tournament_id = $9
       RETURNING *
       `,
       [
@@ -538,6 +589,7 @@ router.put("/:moduleName/update/:id", uploadAny, async (req, res) => {
         imageUrl,
         newImage ? newImage.originalname : existing.file_name,
         id,
+        tournamentId,
       ],
     );
 
@@ -563,9 +615,11 @@ router.delete("/:moduleName/delete/:id", async (req, res) => {
   const config = ASSET_MODULES[moduleName];
 
   try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureAssetTableScope(config.table);
     const result = await pool.query(
-      `DELETE FROM ${config.table} WHERE id = $1 RETURNING *`,
-      [id],
+      `DELETE FROM ${config.table} WHERE id = $1 AND tournament_id = $2 RETURNING *`,
+      [id, tournamentId],
     );
 
     if (!result.rows.length) {

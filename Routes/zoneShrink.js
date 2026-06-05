@@ -1,8 +1,12 @@
 const express = require("express");
 
 const pool = require("../Database/db");
+const {
+  ensureTournamentColumn,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 let zoneShrinkTableReady = false;
 
@@ -11,18 +15,24 @@ const ensureZoneShrinkTable = async () => {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS zone_shrink_state (
-      id INTEGER PRIMARY KEY DEFAULT 1,
+      id SERIAL PRIMARY KEY,
+      tournament_id INTEGER,
       active BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW(),
-      CONSTRAINT zone_shrink_state_single_row CHECK (id = 1)
+      updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
+  await ensureTournamentColumn(pool, "zone_shrink_state");
+  await pool.query("ALTER TABLE zone_shrink_state DROP CONSTRAINT IF EXISTS zone_shrink_state_single_row");
   await pool.query(`
-    INSERT INTO zone_shrink_state (id)
-    VALUES (1)
-    ON CONFLICT (id) DO NOTHING;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_zone_shrink_state_tournament_unique
+    ON zone_shrink_state(tournament_id)
+  `);
+  await pool.query(`
+    INSERT INTO zone_shrink_state (id, tournament_id)
+    SELECT id, id FROM tournaments WHERE slug = 'saggu-family'
+    ON CONFLICT (tournament_id) DO NOTHING;
   `);
 
   zoneShrinkTableReady = true;
@@ -49,9 +59,11 @@ const formatRow = (row = {}) => ({
 router.get("/", async (req, res) => {
   try {
     await ensureZoneShrinkTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const result = await pool.query(
-      "SELECT active, updated_at FROM zone_shrink_state WHERE id = 1 LIMIT 1",
+      "SELECT active, updated_at FROM zone_shrink_state WHERE tournament_id = $1 LIMIT 1",
+      [tournamentId],
     );
 
     return res.json(formatRow(result.rows[0]));
@@ -64,19 +76,20 @@ router.get("/", async (req, res) => {
 const updateZoneShrink = async (req, res) => {
   try {
     await ensureZoneShrinkTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const active = normalizeBoolean(req.body.active, false);
     const result = await pool.query(
       `
-      INSERT INTO zone_shrink_state (id, active, updated_at)
-      VALUES (1, $1, NOW())
-      ON CONFLICT (id) DO UPDATE
+      INSERT INTO zone_shrink_state (id, tournament_id, active, updated_at)
+      VALUES ($1, $1, $2, NOW())
+      ON CONFLICT (tournament_id) DO UPDATE
       SET
         active = EXCLUDED.active,
         updated_at = NOW()
       RETURNING active, updated_at
       `,
-      [active],
+      [tournamentId, active],
     );
 
     return res.json(formatRow(result.rows[0]));

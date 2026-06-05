@@ -4,8 +4,13 @@ const path = require("path");
 const fs = require("fs");
 
 const pool = require("../Database/db");
+const { dropConstraintWithDependents } = require("../Database/schemaMigrations");
+const {
+  ensureTournamentColumn,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 /* =========================================================
    UPLOAD FOLDER SETUP
@@ -73,6 +78,14 @@ const formatImageUrl = (baseUrl, logoPath) => {
   }
 
   return `${baseUrl}/uploads/${logoPath.replace(/^\/?uploads\//i, "")}`;
+};
+
+const toBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const clean = String(value).trim().toLowerCase();
+  return ["true", "1", "yes", "on"].includes(clean);
 };
 
 const getUploadRelativePath = (file, folder) =>
@@ -176,22 +189,56 @@ const ensureCountryLogoTable = async () => {
     CREATE TABLE IF NOT EXISTS country_logos (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
-      image_path TEXT UNIQUE NOT NULL,
+      tournament_id INTEGER,
+      image_path TEXT NOT NULL,
       file_name TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
   `);
+  await ensureTournamentColumn(pool, "country_logos");
+  await pool.query("ALTER TABLE country_logos DROP CONSTRAINT IF EXISTS country_logos_image_path_key");
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_country_logos_tournament_image_path_unique
+    ON country_logos(tournament_id, image_path)
+  `);
 };
 
-const upsertCountryLogo = async (logoPath, name) => {
+const ensureTeamTableScope = async () => {
+  await ensureTournamentColumn(pool, "teams");
+  await pool.query(`
+    ALTER TABLE teams
+    ADD COLUMN IF NOT EXISTS is_playing BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    ALTER TABLE teams
+    ADD COLUMN IF NOT EXISTS permanent_team_id TEXT
+  `);
+  await pool.query(`
+    UPDATE teams
+    SET permanent_team_id = team_id
+    WHERE permanent_team_id IS NULL OR TRIM(permanent_team_id) = ''
+  `);
+  await dropConstraintWithDependents(pool, "teams", "teams_team_id_key");
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_tournament_team_id_unique
+    ON teams(tournament_id, team_id)
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_tournament_permanent_team_id_unique
+    ON teams(tournament_id, permanent_team_id)
+    WHERE permanent_team_id IS NOT NULL AND TRIM(permanent_team_id) <> ''
+  `);
+};
+
+const upsertCountryLogo = async (logoPath, name, tournamentId) => {
   if (!logoPath) return null;
 
   const result = await pool.query(
     `
-    INSERT INTO country_logos (name, image_path, file_name, updated_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (image_path) DO UPDATE
+    INSERT INTO country_logos (tournament_id, name, image_path, file_name, updated_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    ON CONFLICT (tournament_id, image_path) DO UPDATE
     SET
       name = CASE
         WHEN country_logos.name IS NULL OR country_logos.name = ''
@@ -202,20 +249,20 @@ const upsertCountryLogo = async (logoPath, name) => {
       updated_at = NOW()
     RETURNING *
     `,
-    [String(name || "").trim(), logoPath, path.basename(logoPath)],
+    [tournamentId, String(name || "").trim(), logoPath, path.basename(logoPath)],
   );
 
   return result.rows[0];
 };
 
-const getCountryLogoPathFromInput = async (body = {}) => {
+const getCountryLogoPathFromInput = async (body = {}, tournamentId) => {
   const countryLogoId = body.countryLogoId || body.country_logo_id;
   if (countryLogoId) {
     await ensureCountryLogoTable();
 
     const result = await pool.query(
-      "SELECT image_path FROM country_logos WHERE id = $1",
-      [countryLogoId],
+      "SELECT image_path FROM country_logos WHERE id = $1 AND tournament_id = $2",
+      [countryLogoId, tournamentId],
     );
 
     if (result.rows.length) return result.rows[0].image_path;
@@ -230,7 +277,7 @@ const getCountryLogoPathFromInput = async (body = {}) => {
   );
 };
 
-const getCountryLogoPathAt = async (body = {}, index) => {
+const getCountryLogoPathAt = async (body = {}, index, tournamentId) => {
   const getArrayItem = (value) => {
     if (Array.isArray(value)) return value[index];
     return index === 0 ? value : undefined;
@@ -241,8 +288,8 @@ const getCountryLogoPathAt = async (body = {}, index) => {
     await ensureCountryLogoTable();
 
     const result = await pool.query(
-      "SELECT image_path FROM country_logos WHERE id = $1",
-      [countryLogoId],
+      "SELECT image_path FROM country_logos WHERE id = $1 AND tournament_id = $2",
+      [countryLogoId, tournamentId],
     );
 
     if (result.rows.length) return result.rows[0].image_path;
@@ -255,17 +302,20 @@ const getCountryLogoPathAt = async (body = {}, index) => {
   );
 };
 
-const syncCountryLogoCatalog = async () => {
+const syncCountryLogoCatalog = async (tournamentId) => {
   await ensureCountryLogoTable();
 
   const metadata = readCountryLogoMeta();
   const logoPaths = new Set();
 
-  const teamResult = await pool.query(`
+  const teamResult = await pool.query(
+    `
     SELECT DISTINCT country_logo
     FROM teams
-    WHERE country_logo IS NOT NULL AND country_logo <> ''
-  `);
+    WHERE tournament_id = $1 AND country_logo IS NOT NULL AND country_logo <> ''
+    `,
+    [tournamentId],
+  );
   teamResult.rows.forEach((row) => logoPaths.add(row.country_logo));
 
   const countryLogoPath = path.join(uploadPath, COUNTRY_LOGO_DIR);
@@ -280,7 +330,7 @@ const syncCountryLogoCatalog = async () => {
   }
 
   for (const logoPath of logoPaths) {
-    await upsertCountryLogo(logoPath, metadata[logoPath]?.name || "");
+    await upsertCountryLogo(logoPath, metadata[logoPath]?.name || "", tournamentId);
   }
 };
 
@@ -317,6 +367,8 @@ router.post(
     if (req.files?.countryLogo) rollbackCache.push(...req.files.countryLogo);
 
     try {
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
+      await ensureTeamTableScope();
       /*
         Frontend payloads must pass standard scalar arrays for metadata:
         e.g. formData.append("teamId", "12"); formData.append("teamId", "13");
@@ -325,6 +377,7 @@ router.post(
       const teamIdInput = req.body.teamId || req.body.team_id;
       const teamNameInput = req.body.teamName || req.body.team_name;
       const shortTagInput = req.body.shortTag || req.body.short_tag;
+      const isPlayingInput = req.body.isPlaying || req.body.is_playing;
 
       if (!teamIdInput) {
         safelyDeleteFiles(rollbackCache);
@@ -344,6 +397,9 @@ router.post(
       const shortTags = Array.isArray(shortTagInput)
         ? shortTagInput
         : [shortTagInput];
+      const isPlayingValues = Array.isArray(isPlayingInput)
+        ? isPlayingInput
+        : [isPlayingInput];
 
       // Safe indexed tracking pointers for binary attachments
       let teamLogoIndex = 0;
@@ -360,6 +416,7 @@ router.post(
         const teamId = normalizeTeamId(teamIds[i]);
         const teamName = teamNames[i] || null;
         const shortTag = shortTags[i] || null;
+        const isPlaying = toBoolean(isPlayingValues[i], false);
 
         /*
            To link files to their respective team array records over multipart requests:
@@ -378,28 +435,29 @@ router.post(
             req.files?.countryLogo?.[countryLogoIndex],
             COUNTRY_LOGO_DIR,
           ) ||
-          (await getCountryLogoPathAt(req.body, i)) ||
+            (await getCountryLogoPathAt(req.body, i, tournamentId)) ||
           null;
         countryLogoIndex++;
 
         const result = await pool.query(
           `
-          INSERT INTO teams (team_id, team_name, short_tag, team_logo, country_logo)
-          VALUES ($1, $2, $3, $4, $5)
-          ON CONFLICT (team_id) DO UPDATE 
+          INSERT INTO teams (tournament_id, team_id, permanent_team_id, team_name, short_tag, team_logo, country_logo, is_playing)
+          VALUES ($1, $2, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (tournament_id, team_id) DO UPDATE 
           SET 
             team_name = EXCLUDED.team_name,
             short_tag = EXCLUDED.short_tag,
             team_logo = COALESCE(EXCLUDED.team_logo, teams.team_logo),
             country_logo = COALESCE(EXCLUDED.country_logo, teams.country_logo),
+            is_playing = EXCLUDED.is_playing,
             updated_at = NOW()
           RETURNING *
           `,
-          [teamId, teamName, shortTag, teamLogo, countryLogo],
+          [tournamentId, teamId, teamName, shortTag, teamLogo, countryLogo, isPlaying],
         );
 
         const row = result.rows[0];
-        if (countryLogo) await upsertCountryLogo(countryLogo, "");
+        if (countryLogo) await upsertCountryLogo(countryLogo, "", tournamentId);
         row.team_logo = formatImageUrl(baseUrl, row.team_logo);
         row.country_logo = formatImageUrl(baseUrl, row.country_logo);
         processedRows.push(row);
@@ -424,13 +482,16 @@ router.post(
 router.get("/all", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureTeamTableScope();
     const result = await pool.query(`
       SELECT *
       FROM teams
+      WHERE tournament_id = $1
       ORDER BY
         CASE WHEN team_id ~ '^[0-9]+$' THEN team_id::BIGINT END ASC NULLS LAST,
         team_id ASC
-    `);
+    `, [tournamentId]);
 
     const data = result.rows.map((row) => ({
       ...row,
@@ -445,16 +506,50 @@ router.get("/all", async (req, res) => {
   }
 });
 
+router.patch("/:id/playing", async (req, res) => {
+  try {
+    const baseUrl = getBaseUrl(req);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureTeamTableScope();
+    const isPlaying = toBoolean(req.body.isPlaying ?? req.body.is_playing, false);
+
+    const result = await pool.query(
+      `
+      UPDATE teams
+      SET is_playing = $1, updated_at = NOW()
+      WHERE id = $2 AND tournament_id = $3
+      RETURNING *
+      `,
+      [isPlaying, req.params.id, tournamentId],
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ success: false, message: "Team not found" });
+    }
+
+    const row = result.rows[0];
+    row.team_logo = formatImageUrl(baseUrl, row.team_logo);
+    row.country_logo = formatImageUrl(baseUrl, row.country_logo);
+
+    res.json({ success: true, data: row });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 /* =========================================================
    GET TEAM BY GARENA TEAM_ID
 ========================================================= */
 router.get("/by-team-id/:teamId", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
     const teamId = normalizeTeamId(req.params.teamId);
-    const result = await pool.query("SELECT * FROM teams WHERE team_id = $1", [
-      teamId,
-    ]);
+    const result = await pool.query(
+      "SELECT * FROM teams WHERE team_id = $1 AND tournament_id = $2",
+      [teamId, tournamentId],
+    );
 
     if (!result.rows.length) {
       return res
@@ -479,10 +574,11 @@ router.get("/by-team-id/:teamId", async (req, res) => {
 router.get("/country-logo/by-team-id/:teamId", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
     const teamId = normalizeTeamId(req.params.teamId);
     const result = await pool.query(
-      "SELECT team_id, country_logo FROM teams WHERE team_id = $1",
-      [teamId],
+      "SELECT team_id, country_logo FROM teams WHERE team_id = $1 AND tournament_id = $2",
+      [teamId, tournamentId],
     );
 
     if (!result.rows.length) {
@@ -512,13 +608,15 @@ router.get("/country-logo/by-team-id/:teamId", async (req, res) => {
 router.get("/country-logos", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
-    await syncCountryLogoCatalog();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await syncCountryLogoCatalog(tournamentId);
 
     const result = await pool.query(`
       SELECT *
       FROM country_logos
+      WHERE tournament_id = $1
       ORDER BY name ASC, id ASC
-    `);
+    `, [tournamentId]);
 
     res.json({
       success: true,
@@ -546,12 +644,14 @@ router.post(
       }
 
       const baseUrl = getBaseUrl(req);
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
       await ensureCountryLogoTable();
 
       const logoPath = getUploadRelativePath(req.file, COUNTRY_LOGO_DIR);
       const row = await upsertCountryLogo(
         logoPath,
         getCountryLogoNameInput(req.body),
+        tournamentId,
       );
 
       res.json({
@@ -578,11 +678,12 @@ router.put(
 
     try {
       const baseUrl = getBaseUrl(req);
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
       await ensureCountryLogoTable();
 
       const existingResult = await pool.query(
-        "SELECT * FROM country_logos WHERE id = $1",
-        [req.params.id],
+        "SELECT * FROM country_logos WHERE id = $1 AND tournament_id = $2",
+        [req.params.id, tournamentId],
       );
 
       if (!existingResult.rows.length) {
@@ -606,10 +707,10 @@ router.put(
               `
               UPDATE teams
               SET country_logo = $1, updated_at = NOW()
-              WHERE country_logo = $2
+              WHERE country_logo = $2 AND tournament_id = $3
               RETURNING id
               `,
-              [newLogoPath, oldLogoPath],
+              [newLogoPath, oldLogoPath, tournamentId],
             )
           : { rowCount: 0 };
 
@@ -651,7 +752,8 @@ router.put("/country-logos", upload.single("countryLogo"), async (req, res) => {
   const newFile = req.file;
 
   try {
-    await syncCountryLogoCatalog();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await syncCountryLogoCatalog(tournamentId);
 
     const logoPath = normalizeUploadReference(
       req.body.path || req.body.countryLogo || req.body.filename,
@@ -667,8 +769,8 @@ router.put("/country-logos", upload.single("countryLogo"), async (req, res) => {
     }
 
     const result = await pool.query(
-      "SELECT id FROM country_logos WHERE image_path = $1",
-      [logoPath],
+      "SELECT id FROM country_logos WHERE image_path = $1 AND tournament_id = $2",
+      [logoPath, tournamentId],
     );
 
     if (!result.rows.length) {
@@ -679,8 +781,8 @@ router.put("/country-logos", upload.single("countryLogo"), async (req, res) => {
     }
 
     const existingResult = await pool.query(
-      "SELECT * FROM country_logos WHERE id = $1",
-      [result.rows[0].id],
+      "SELECT * FROM country_logos WHERE id = $1 AND tournament_id = $2",
+      [result.rows[0].id, tournamentId],
     );
     const existing = existingResult.rows[0];
     const oldLogoPath = existing.image_path;
@@ -695,10 +797,10 @@ router.put("/country-logos", upload.single("countryLogo"), async (req, res) => {
             `
             UPDATE teams
             SET country_logo = $1, updated_at = NOW()
-            WHERE country_logo = $2
+            WHERE country_logo = $2 AND tournament_id = $3
             RETURNING id
             `,
-            [newLogoPath, oldLogoPath],
+            [newLogoPath, oldLogoPath, tournamentId],
           )
         : { rowCount: 0 };
 
@@ -706,10 +808,10 @@ router.put("/country-logos", upload.single("countryLogo"), async (req, res) => {
       `
       UPDATE country_logos
       SET name = $1, image_path = $2, file_name = $3, updated_at = NOW()
-      WHERE id = $4
+      WHERE id = $4 AND tournament_id = $5
       RETURNING *
       `,
-      [nextName, newLogoPath, path.basename(newLogoPath), existing.id],
+      [nextName, newLogoPath, path.basename(newLogoPath), existing.id, tournamentId],
     );
 
     if (newFile) {
@@ -738,10 +840,11 @@ router.put("/country-logos", upload.single("countryLogo"), async (req, res) => {
 router.delete("/country-logos/:id", async (req, res) => {
   try {
     await ensureCountryLogoTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const logoResult = await pool.query(
-      "DELETE FROM country_logos WHERE id = $1 RETURNING *",
-      [req.params.id],
+      "DELETE FROM country_logos WHERE id = $1 AND tournament_id = $2 RETURNING *",
+      [req.params.id, tournamentId],
     );
 
     if (!logoResult.rows.length) {
@@ -755,10 +858,10 @@ router.delete("/country-logos/:id", async (req, res) => {
       `
       UPDATE teams
       SET country_logo = NULL, updated_at = NOW()
-      WHERE country_logo = $1
+      WHERE country_logo = $1 AND tournament_id = $2
       RETURNING id
       `,
-      [deletedRow.image_path],
+      [deletedRow.image_path, tournamentId],
     );
 
     safelyDeleteFiles([
@@ -783,7 +886,8 @@ router.delete("/country-logos/:id", async (req, res) => {
 ========================================================= */
 router.delete("/country-logos", async (req, res) => {
   try {
-    await syncCountryLogoCatalog();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await syncCountryLogoCatalog(tournamentId);
 
     const logoPath = normalizeUploadReference(
       req.body.path || req.body.countryLogo || req.body.filename,
@@ -798,8 +902,8 @@ router.delete("/country-logos", async (req, res) => {
     }
 
     const logoResult = await pool.query(
-      "SELECT id FROM country_logos WHERE image_path = $1",
-      [logoPath],
+      "SELECT id FROM country_logos WHERE image_path = $1 AND tournament_id = $2",
+      [logoPath, tournamentId],
     );
 
     if (!logoResult.rows.length) {
@@ -809,18 +913,18 @@ router.delete("/country-logos", async (req, res) => {
     }
 
     const deleteResult = await pool.query(
-      "DELETE FROM country_logos WHERE id = $1 RETURNING *",
-      [logoResult.rows[0].id],
+      "DELETE FROM country_logos WHERE id = $1 AND tournament_id = $2 RETURNING *",
+      [logoResult.rows[0].id, tournamentId],
     );
     const deletedRow = deleteResult.rows[0];
     const teamResult = await pool.query(
       `
       UPDATE teams
       SET country_logo = NULL, updated_at = NOW()
-      WHERE country_logo = $1
+      WHERE country_logo = $1 AND tournament_id = $2
       RETURNING id
       `,
-      [deletedRow.image_path],
+      [deletedRow.image_path, tournamentId],
     );
 
     safelyDeleteFiles([
@@ -846,9 +950,11 @@ router.delete("/country-logos", async (req, res) => {
 router.get("/:id", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);
-    const result = await pool.query("SELECT * FROM teams WHERE id = $1", [
-      req.params.id,
-    ]);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    const result = await pool.query(
+      "SELECT * FROM teams WHERE id = $1 AND tournament_id = $2",
+      [req.params.id, tournamentId],
+    );
 
     if (!result.rows.length) {
       return res
@@ -881,10 +987,12 @@ router.put(
 
     try {
       const baseUrl = getBaseUrl(req);
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
       const lookupTeamId = normalizeTeamId(req.params.teamId);
-      const oldTeam = await pool.query("SELECT * FROM teams WHERE team_id = $1", [
-        lookupTeamId,
-      ]);
+      const oldTeam = await pool.query(
+        "SELECT * FROM teams WHERE team_id = $1 AND tournament_id = $2",
+        [lookupTeamId, tournamentId],
+      );
 
       if (!oldTeam.rows.length) {
         safelyDeleteFiles(uploadedFiles);
@@ -902,6 +1010,10 @@ router.put(
         req.body.teamName || req.body.team_name || existing.team_name;
       const shortTag =
         req.body.shortTag || req.body.short_tag || existing.short_tag;
+      const isPlaying = toBoolean(
+        req.body.isPlaying ?? req.body.is_playing,
+        Boolean(existing.is_playing),
+      );
 
       const newTeamLogo = getUploadRelativePath(
         req.files?.teamLogo?.[0],
@@ -911,7 +1023,7 @@ router.put(
         req.files?.countryLogo?.[0],
         COUNTRY_LOGO_DIR,
       );
-      const selectedCountryLogo = await getCountryLogoPathFromInput(req.body);
+      const selectedCountryLogo = await getCountryLogoPathFromInput(req.body, tournamentId);
 
       const teamLogo = newTeamLogo || existing.team_logo;
       const countryLogo =
@@ -920,11 +1032,11 @@ router.put(
       const result = await pool.query(
         `
         UPDATE teams
-        SET team_id = $1, team_name = $2, short_tag = $3, team_logo = $4, country_logo = $5, updated_at = NOW()
-        WHERE team_id = $6
+        SET team_id = $1, team_name = $2, short_tag = $3, team_logo = $4, country_logo = $5, is_playing = $6, updated_at = NOW()
+        WHERE team_id = $7 AND tournament_id = $8
         RETURNING *
         `,
-        [teamId, teamName, shortTag, teamLogo, countryLogo, lookupTeamId],
+        [teamId, teamName, shortTag, teamLogo, countryLogo, isPlaying, lookupTeamId, tournamentId],
       );
 
       if (newTeamLogo && existing.team_logo) {
@@ -937,8 +1049,8 @@ router.put(
           resolveUploadPath(existing.country_logo, COUNTRY_LOGO_DIR),
         ]);
       }
-      if (newCountryLogo) await upsertCountryLogo(newCountryLogo, "");
-      if (selectedCountryLogo) await upsertCountryLogo(selectedCountryLogo, "");
+      if (newCountryLogo) await upsertCountryLogo(newCountryLogo, "", tournamentId);
+      if (selectedCountryLogo) await upsertCountryLogo(selectedCountryLogo, "", tournamentId);
 
       const row = result.rows[0];
       row.team_logo = formatImageUrl(baseUrl, row.team_logo);
@@ -964,9 +1076,11 @@ router.put(
 
     try {
       const baseUrl = getBaseUrl(req);
-      const oldTeam = await pool.query("SELECT * FROM teams WHERE id = $1", [
-        req.params.id,
-      ]);
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
+      const oldTeam = await pool.query(
+        "SELECT * FROM teams WHERE id = $1 AND tournament_id = $2",
+        [req.params.id, tournamentId],
+      );
 
       if (!oldTeam.rows.length) {
         safelyDeleteFiles(uploadedFiles);
@@ -984,6 +1098,10 @@ router.put(
         req.body.teamName || req.body.team_name || existing.team_name;
       const shortTag =
         req.body.shortTag || req.body.short_tag || existing.short_tag;
+      const isPlaying = toBoolean(
+        req.body.isPlaying ?? req.body.is_playing,
+        Boolean(existing.is_playing),
+      );
 
       const newTeamLogo = getUploadRelativePath(
         req.files?.teamLogo?.[0],
@@ -993,7 +1111,7 @@ router.put(
         req.files?.countryLogo?.[0],
         COUNTRY_LOGO_DIR,
       );
-      const selectedCountryLogo = await getCountryLogoPathFromInput(req.body);
+      const selectedCountryLogo = await getCountryLogoPathFromInput(req.body, tournamentId);
 
       const teamLogo = newTeamLogo || existing.team_logo;
       const countryLogo =
@@ -1002,11 +1120,11 @@ router.put(
       const result = await pool.query(
         `
         UPDATE teams
-        SET team_id = $1, team_name = $2, short_tag = $3, team_logo = $4, country_logo = $5, updated_at = NOW()
-        WHERE id = $6
+        SET team_id = $1, team_name = $2, short_tag = $3, team_logo = $4, country_logo = $5, is_playing = $6, updated_at = NOW()
+        WHERE id = $7 AND tournament_id = $8
         RETURNING *
         `,
-        [teamId, teamName, shortTag, teamLogo, countryLogo, req.params.id],
+        [teamId, teamName, shortTag, teamLogo, countryLogo, isPlaying, req.params.id, tournamentId],
       );
 
       // Remove stale disk files if new ones were uploaded
@@ -1020,8 +1138,8 @@ router.put(
           resolveUploadPath(existing.country_logo, COUNTRY_LOGO_DIR),
         ]);
       }
-      if (newCountryLogo) await upsertCountryLogo(newCountryLogo, "");
-      if (selectedCountryLogo) await upsertCountryLogo(selectedCountryLogo, "");
+      if (newCountryLogo) await upsertCountryLogo(newCountryLogo, "", tournamentId);
+      if (selectedCountryLogo) await upsertCountryLogo(selectedCountryLogo, "", tournamentId);
 
       const row = result.rows[0];
       row.team_logo = formatImageUrl(baseUrl, row.team_logo);
@@ -1041,11 +1159,12 @@ router.put(
 ========================================================= */
 const deleteTeam = async (req, res, lookupColumn, lookupValue) => {
   try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
     await pool.query("BEGIN");
 
     const teamResult = await pool.query(
-      `DELETE FROM teams WHERE ${lookupColumn} = $1 RETURNING *`,
-      [lookupValue],
+      `DELETE FROM teams WHERE ${lookupColumn} = $1 AND tournament_id = $2 RETURNING *`,
+      [lookupValue, tournamentId],
     );
 
     if (!teamResult.rows.length) {
@@ -1057,8 +1176,8 @@ const deleteTeam = async (req, res, lookupColumn, lookupValue) => {
 
     const deletedRow = teamResult.rows[0];
     const playerResult = await pool.query(
-      "DELETE FROM team_players WHERE team_id = $1 RETURNING *",
-      [deletedRow.team_id],
+      "DELETE FROM team_players WHERE team_id = $1 AND tournament_id = $2 RETURNING *",
+      [deletedRow.team_id, tournamentId],
     );
 
     await pool.query("COMMIT");

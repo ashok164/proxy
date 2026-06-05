@@ -1,8 +1,12 @@
 const express = require("express");
 
 const pool = require("../Database/db");
+const {
+  ensureTournamentColumn,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 const firstValue = (...values) =>
   values.find((value) => value !== undefined && value !== null && value !== "");
@@ -85,6 +89,7 @@ const ensureGameDetailsTable = async () => {
     ALTER TABLE game_details
     ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT false;
   `);
+  await ensureTournamentColumn(pool, "game_details");
 
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_game_details_game_id
@@ -169,11 +174,13 @@ const formatMatchNumberRow = (row) => ({
 router.post("/create", async (req, res) => {
   try {
     await ensureGameDetailsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const input = normalizePayload(req.body);
     const result = await pool.query(
       `
       INSERT INTO game_details (
+        tournament_id,
         game_id,
         game_number,
         game_name,
@@ -187,10 +194,11 @@ router.post("/create", async (req, res) => {
         details,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW())
       RETURNING *
       `,
       [
+        tournamentId,
         toNullableString(input.gameId),
         toNullableString(input.gameNumber),
         toNullableString(input.gameName),
@@ -219,12 +227,14 @@ router.post("/create", async (req, res) => {
 router.get("/all", async (req, res) => {
   try {
     await ensureGameDetailsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const result = await pool.query(`
       SELECT *
       FROM game_details
+      WHERE tournament_id = $1
       ORDER BY id ASC
-    `);
+    `, [tournamentId]);
 
     return res.json({
       success: true,
@@ -239,14 +249,16 @@ router.get("/all", async (req, res) => {
 router.get("/match-numbers", async (req, res) => {
   try {
     await ensureGameDetailsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const result = await pool.query(`
       SELECT id, game_number, match_id
       FROM game_details
       WHERE game_number IS NOT NULL
         AND TRIM(game_number) <> ''
+        AND tournament_id = $1
       ORDER BY id ASC
-    `);
+    `, [tournamentId]);
 
     return res.json({
       success: true,
@@ -261,10 +273,11 @@ router.get("/match-numbers", async (req, res) => {
 router.put("/update/:id", async (req, res) => {
   try {
     await ensureGameDetailsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const existingResult = await pool.query(
-      "SELECT * FROM game_details WHERE id = $1",
-      [req.params.id],
+      "SELECT * FROM game_details WHERE id = $1 AND tournament_id = $2",
+      [req.params.id, tournamentId],
     );
 
     if (!existingResult.rows.length) {
@@ -296,7 +309,7 @@ router.put("/update/:id", async (req, res) => {
         enabled = $10,
         details = $11::jsonb,
         updated_at = NOW()
-      WHERE id = $12
+      WHERE id = $12 AND tournament_id = $13
       RETURNING *
       `,
       [
@@ -332,6 +345,7 @@ router.put("/update/:id", async (req, res) => {
           : existing.enabled,
         JSON.stringify(mergedDetails),
         req.params.id,
+        tournamentId,
       ],
     );
 
@@ -351,13 +365,14 @@ router.delete("/delete/:id", async (req, res) => {
 
   try {
     await ensureGameDetailsTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     client = await pool.connect();
     await client.query("BEGIN");
 
     const gameDetailResult = await client.query(
-      "SELECT * FROM game_details WHERE id = $1 FOR UPDATE",
-      [req.params.id],
+      "SELECT * FROM game_details WHERE id = $1 AND tournament_id = $2 FOR UPDATE",
+      [req.params.id, tournamentId],
     );
 
     if (!gameDetailResult.rows.length) {
@@ -374,12 +389,12 @@ router.delete("/delete/:id", async (req, res) => {
 
     if (matchId) {
       const playerResult = await client.query(
-        "DELETE FROM match_result_players WHERE match_id = $1",
-        [matchId],
+        "DELETE FROM match_result_players WHERE match_id = $1 AND tournament_id = $2",
+        [matchId, tournamentId],
       );
       const resultResult = await client.query(
-        "DELETE FROM match_results WHERE match_id = $1",
-        [matchId],
+        "DELETE FROM match_results WHERE match_id = $1 AND tournament_id = $2",
+        [matchId, tournamentId],
       );
 
       deletedPlayers = playerResult.rowCount;
@@ -387,8 +402,8 @@ router.delete("/delete/:id", async (req, res) => {
     }
 
     const result = await client.query(
-      "DELETE FROM game_details WHERE id = $1 RETURNING *",
-      [req.params.id],
+      "DELETE FROM game_details WHERE id = $1 AND tournament_id = $2 RETURNING *",
+      [req.params.id, tournamentId],
     );
 
     await client.query("COMMIT");

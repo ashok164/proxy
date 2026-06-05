@@ -106,14 +106,14 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 
 /* ================= WEBSOCKET ================= */
-server.on("upgrade", (req, socket) => {
+server.on("upgrade", async (req, socket) => {
   try {
     const isWebSocket =
       req.headers.upgrade && req.headers.upgrade.toLowerCase() === "websocket";
 
     if (!isWebSocket) return;
 
-    const handled = realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
+    const handled = await realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
 
     if (!handled) socket.destroy();
   } catch (err) {

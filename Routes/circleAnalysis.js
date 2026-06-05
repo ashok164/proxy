@@ -1,8 +1,12 @@
 const express = require("express");
 
 const pool = require("../Database/db");
+const {
+  ensureTournamentColumn,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 const DEFAULT_CIRCLES = [1, 2, 3, 4, 5, 6, 7, 8];
 
@@ -13,19 +17,25 @@ const ensureCircleAnalysisTable = async () => {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS circle_analysis (
-      id INTEGER PRIMARY KEY DEFAULT 1,
+      id SERIAL PRIMARY KEY,
+      tournament_id INTEGER,
       circles JSONB NOT NULL DEFAULT '[1,2,3,4,5,6,7,8]'::jsonb,
       teams JSONB NOT NULL DEFAULT '[]'::jsonb,
       created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW(),
-      CONSTRAINT circle_analysis_single_row CHECK (id = 1)
+      updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
+  await ensureTournamentColumn(pool, "circle_analysis");
+  await pool.query("ALTER TABLE circle_analysis DROP CONSTRAINT IF EXISTS circle_analysis_single_row");
   await pool.query(`
-    INSERT INTO circle_analysis (id)
-    VALUES (1)
-    ON CONFLICT (id) DO NOTHING;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_circle_analysis_tournament_unique
+    ON circle_analysis(tournament_id)
+  `);
+  await pool.query(`
+    INSERT INTO circle_analysis (id, tournament_id)
+    SELECT id, id FROM tournaments WHERE slug = 'saggu-family'
+    ON CONFLICT (tournament_id) DO NOTHING;
   `);
 
   circleAnalysisTableReady = true;
@@ -103,9 +113,11 @@ const formatRow = (row = {}) => ({
 router.get("/", async (req, res) => {
   try {
     await ensureCircleAnalysisTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const result = await pool.query(
-      "SELECT circles, teams, updated_at FROM circle_analysis WHERE id = 1 LIMIT 1",
+      "SELECT circles, teams, updated_at FROM circle_analysis WHERE tournament_id = $1 LIMIT 1",
+      [tournamentId],
     );
 
     return res.json(formatRow(result.rows[0]));
@@ -118,20 +130,21 @@ router.get("/", async (req, res) => {
 const updateCircleAnalysis = async (req, res) => {
   try {
     await ensureCircleAnalysisTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const payload = normalizePayload(req.body);
     const result = await pool.query(
       `
-      INSERT INTO circle_analysis (id, circles, teams, updated_at)
-      VALUES (1, $1::jsonb, $2::jsonb, NOW())
-      ON CONFLICT (id) DO UPDATE
+      INSERT INTO circle_analysis (id, tournament_id, circles, teams, updated_at)
+      VALUES ($1, $1, $2::jsonb, $3::jsonb, NOW())
+      ON CONFLICT (tournament_id) DO UPDATE
       SET
         circles = EXCLUDED.circles,
         teams = EXCLUDED.teams,
         updated_at = NOW()
       RETURNING circles, teams, updated_at
       `,
-      [JSON.stringify(payload.circles), JSON.stringify(payload.teams)],
+      [tournamentId, JSON.stringify(payload.circles), JSON.stringify(payload.teams)],
     );
 
     return res.json(formatRow(result.rows[0]));

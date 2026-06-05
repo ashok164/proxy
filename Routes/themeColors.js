@@ -1,8 +1,12 @@
 const express = require("express");
 
 const pool = require("../Database/db");
+const {
+  ensureTournamentColumn,
+  getTournamentIdFromRequest,
+} = require("../Data/tournamentContext");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 const COLOR_FIELDS = [
   "primary",
@@ -22,7 +26,8 @@ const COLOR_FIELDS = [
 const ensureThemeTable = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS theme_colors (
-      id INTEGER PRIMARY KEY DEFAULT 1,
+      id SERIAL PRIMARY KEY,
+      tournament_id INTEGER,
       use_default_colors BOOLEAN NOT NULL DEFAULT false,
       primary_color TEXT,
       secondary_color TEXT,
@@ -37,9 +42,14 @@ const ensureThemeTable = async () => {
       warning_color TEXT,
       danger_color TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW(),
-      CONSTRAINT theme_colors_single_row CHECK (id = 1)
+      updated_at TIMESTAMP DEFAULT NOW()
     )
+  `);
+  await ensureTournamentColumn(pool, "theme_colors");
+  await pool.query("ALTER TABLE theme_colors DROP CONSTRAINT IF EXISTS theme_colors_single_row");
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_theme_colors_tournament_unique
+    ON theme_colors(tournament_id)
   `);
 
   for (const column of [
@@ -65,9 +75,9 @@ const ensureThemeTable = async () => {
   }
 
   await pool.query(`
-    INSERT INTO theme_colors (id)
-    VALUES (1)
-    ON CONFLICT (id) DO NOTHING
+    INSERT INTO theme_colors (id, tournament_id)
+    SELECT id, id FROM tournaments WHERE slug = 'saggu-family'
+    ON CONFLICT (tournament_id) DO NOTHING
   `);
 };
 
@@ -119,9 +129,11 @@ const normalizeThemeInput = (body = {}) => {
 router.get("/colors", async (req, res) => {
   try {
     await ensureThemeTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const result = await pool.query(
-      "SELECT * FROM theme_colors WHERE id = 1 LIMIT 1",
+      "SELECT * FROM theme_colors WHERE tournament_id = $1 LIMIT 1",
+      [tournamentId],
     );
 
     return res.json(formatTheme(result.rows[0]));
@@ -134,6 +146,7 @@ router.get("/colors", async (req, res) => {
 const saveThemeColors = async (req, res) => {
   try {
     await ensureThemeTable();
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
 
     const theme = normalizeThemeInput(req.body);
 
@@ -141,6 +154,7 @@ const saveThemeColors = async (req, res) => {
       `
       INSERT INTO theme_colors (
         id,
+        tournament_id,
         use_default_colors,
         primary_color,
         secondary_color,
@@ -156,8 +170,8 @@ const saveThemeColors = async (req, res) => {
         danger_color,
         updated_at
       )
-      VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
-      ON CONFLICT (id) DO UPDATE
+      VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+      ON CONFLICT (tournament_id) DO UPDATE
       SET
         use_default_colors = EXCLUDED.use_default_colors,
         primary_color = EXCLUDED.primary_color,
@@ -176,6 +190,7 @@ const saveThemeColors = async (req, res) => {
       RETURNING *
       `,
       [
+        tournamentId,
         theme.useDefaultColors,
         theme.primary,
         theme.secondary,
