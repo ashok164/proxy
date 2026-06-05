@@ -1290,11 +1290,21 @@ const buildLiveBroadcastPayload = (standings = {}) => ({
   success: true,
   schema: standings.schema || "realtime.v2",
   matchId: standings.matchId,
+  settings: standings.settings || {},
   teamIdentityMatches: standings.teamIdentityMatches || [],
-  liveStandings2: standings.liveStandings2 || [],
   liveMatchStandings: standings.liveMatchStandings || [],
   liveOverall: standings.liveOverall || [],
 });
+
+const wantsFullRealtimePayload = (req) =>
+  ["1", "true", "yes", "legacy"].includes(
+    String(req.query?.full || req.query?.legacy || "").toLowerCase(),
+  );
+
+const buildHttpTableStandingsPayload = (standings = {}, req) => {
+  if (wantsFullRealtimePayload(req)) return standings;
+  return buildLiveBroadcastPayload(standings);
+};
 
 const getRealtimeMeta = async (tournamentId = null) => {
   const now = Date.now();
@@ -1605,7 +1615,7 @@ router.get(
           return res.json({
             success: true,
             type: "tablestandings_cached",
-            data: matchCache[cacheKey].rawJsonData,
+            data: buildHttpTableStandingsPayload(matchCache[cacheKey].rawJsonData, req),
           });
         }
       }
@@ -1632,7 +1642,7 @@ router.get(
       return res.json({
         success: true,
         type: "tablestandings_static",
-        data: standingsData,
+        data: buildHttpTableStandingsPayload(standingsData, req),
       });
     } catch (err) {
       console.error("❌ Browser HTTP GET Endpoint Error:", err.message);
