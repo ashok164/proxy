@@ -72,8 +72,6 @@ const circleAnalysisRoutes = require("./Routes/circleAnalysis");
 const zoneShrinkRoutes = require("./Routes/zoneShrink");
 const matchStatsRoutes = require("./Routes/matchStats");
 const matchResultRoutes = require("./Routes/matchResults");
-const matchTeamMappingRoutes = require("./Routes/matchTeamMappings");
-const mappingTemplateRoutes = require("./Routes/mappingTemplates");
 const googleSheetsRoutes = require("./Routes/googleSheets");
 
 app.use("/", realtimeRoutes);
@@ -88,8 +86,6 @@ app.use("/api/circle-analysis", circleAnalysisRoutes);
 app.use("/api/zone-shrink", zoneShrinkRoutes);
 app.use("/api/match_stats", matchStatsRoutes);
 app.use("/api/results", matchResultRoutes);
-app.use("/api/match-team-mappings", matchTeamMappingRoutes);
-app.use("/api/mapping-templates", mappingTemplateRoutes);
 app.use("/api/results", googleSheetsRoutes);
 app.use("/api", gameAssetRoutes);
 

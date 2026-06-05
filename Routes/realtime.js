@@ -12,7 +12,7 @@ const {
   getPlayersFromTeamPayload,
   saveMatchPlayers,
 } = require("../Data/matchMetadata");
-const { verifyAndCorrectTeamMappings } = require("../Data/teamIdentityVerifier");
+const { resolveTeamIdentities } = require("../Data/teamIdentityVerifier");
 
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -352,39 +352,8 @@ const buildTeamBannerIndex = async () => {
   return index;
 };
 
-const buildRoomTeamMappingIndex = async (matchId) => {
-  const index = {};
-
-  try {
-    const result = await pool.query(
-      `
-      SELECT room_team_id, permanent_team_id
-      FROM match_team_mappings
-      WHERE match_id = $1
-      `,
-      [matchId],
-    );
-
-    for (const mapping of result.rows) {
-      const roomTeamIdKey = normalizeTeamIdKey(mapping.room_team_id);
-      const permanentTeamIdKey = normalizeTeamIdKey(mapping.permanent_team_id);
-      if (roomTeamIdKey && permanentTeamIdKey) {
-        index[roomTeamIdKey] = permanentTeamIdKey;
-      }
-    }
-  } catch (err) {
-    if (err.code === "42P01") {
-      console.warn("Match team mappings table missing; falling back to raw room team ids");
-    } else {
-      console.error("DB match team mapping lookup failed:", err.message);
-    }
-  }
-
-  return index;
-};
-
 const resolvePermanentTeamId = (roomTeamIdKey, roomTeamMap = {}) =>
-  roomTeamMap[roomTeamIdKey] || roomTeamIdKey;
+  roomTeamMap[roomTeamIdKey] || "";
 
 const buildHistoricalLeaderboardIndex = async (activeMatchId) => {
   const index = {};
@@ -649,7 +618,7 @@ const saveRealtimeResultsSnapshot = async (matchId, standings = {}) => {
       !roomTeamId ||
       !permanentTeamId ||
       permanentTeamId === "-1" ||
-      !team.mappingMatched
+      !team.identityMatched
     ) {
       skippedCount += 1;
       continue;
@@ -801,7 +770,7 @@ const compactRealtimeTeam = (team = {}) => {
     win_rate: firstValue(team.win_rate, team.winRate, team.winrate, 0),
     is_playing: firstValue(team.isPlaying, team.is_playing, players.length > 0),
     is_eliminated: Boolean(team.is_eliminated),
-    mapping_matched: Boolean(team.mappingMatched || team.mapping_matched),
+    identity_matched: Boolean(team.identityMatched || team.identity_matched),
     player_stats: players.map(compactRealtimePlayer),
   };
 };
@@ -1134,7 +1103,7 @@ const mergeTeam = (
     }),
 
     metaMatched: Boolean(teamIdKey && meta.team_id),
-    mappingMatched: Boolean(roomTeamIdKey && roomTeamMap[roomTeamIdKey]),
+    identityMatched: Boolean(teamIdKey && meta.team_id),
   };
 
   if (playerStats !== undefined) {
@@ -1151,7 +1120,6 @@ const mergeTeam = (
 const buildStandings = async (id, logoCache = {}) => {
   const data = await fetchMatch(id);
   const meta = await getRealtimeMeta();
-  const initialRoomTeamMap = await buildRoomTeamMappingIndex(id);
   const {
     metaIndex,
     playerIndex,
@@ -1163,12 +1131,11 @@ const buildStandings = async (id, logoCache = {}) => {
   const rawTeams = getTeams(data);
   const {
     roomTeamMap,
-    corrections: teamMappingCorrections,
-    detections: teamMappingDetections,
-  } = await verifyAndCorrectTeamMappings(pool, {
+    corrections: teamIdentityMatches,
+    detections: teamIdentityDetections,
+  } = await resolveTeamIdentities(pool, {
     matchId: id,
     teams: rawTeams,
-    existingRoomMap: initialRoomTeamMap,
     getRoomTeamId: getTeamId,
     getPlayersFromTeam: (team) =>
       team.player_stats !== undefined
@@ -1203,8 +1170,8 @@ const buildStandings = async (id, logoCache = {}) => {
     matchId: id,
     schema: "realtime.v2",
     roomTeamMap,
-    teamMappingCorrections,
-    teamMappingDetections,
+    teamIdentityMatches,
+    teamIdentityDetections,
     liveStandings2: liveStandings,
     liveOverall,
     standings: teams,
@@ -1225,7 +1192,7 @@ const buildLiveBroadcastPayload = (standings = {}) => ({
   schema: standings.schema || "realtime.v2",
   matchId: standings.matchId,
   roomTeamMap: standings.roomTeamMap || {},
-  teamMappingCorrections: standings.teamMappingCorrections || [],
+  teamIdentityMatches: standings.teamIdentityMatches || [],
   liveStandings2: standings.liveStandings2 || [],
   liveOverall: standings.liveOverall || [],
 });

@@ -123,7 +123,6 @@ const initDB = async () => {
         map_name TEXT,
         status TEXT,
         start_time TEXT,
-        mapping_template_id TEXT,
         enabled BOOLEAN NOT NULL DEFAULT false,
         details JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMP DEFAULT NOW(),
@@ -199,54 +198,6 @@ const initDB = async () => {
     `);
 
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS match_team_mappings (
-        id SERIAL PRIMARY KEY,
-        match_id TEXT NOT NULL,
-        room_team_id TEXT NOT NULL,
-        permanent_team_id TEXT NOT NULL REFERENCES teams(team_id) ON UPDATE CASCADE ON DELETE CASCADE,
-        mapped_team_name TEXT,
-        mapped_team_tag TEXT,
-        slot_number INTEGER,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
-        CONSTRAINT match_team_mappings_match_room_unique UNIQUE (match_id, room_team_id),
-        CONSTRAINT match_team_mappings_match_team_unique UNIQUE (match_id, permanent_team_id)
-      );
-    `);
-
-    await pool.query(`
-      ALTER TABLE match_team_mappings
-      ADD COLUMN IF NOT EXISTS mapped_team_name TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE match_team_mappings
-      ADD COLUMN IF NOT EXISTS mapped_team_tag TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE match_team_mappings
-      DROP CONSTRAINT IF EXISTS match_team_mappings_permanent_team_id_fkey;
-
-      ALTER TABLE match_team_mappings
-      ADD CONSTRAINT match_team_mappings_permanent_team_id_fkey
-      FOREIGN KEY (permanent_team_id)
-      REFERENCES teams(team_id)
-      ON UPDATE CASCADE
-      ON DELETE CASCADE;
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS mapping_templates (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        mappings JSONB NOT NULL DEFAULT '[]'::jsonb,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await pool.query(`
       ALTER TABLE game_details
       ADD COLUMN IF NOT EXISTS game_number TEXT;
     `);
@@ -259,11 +210,6 @@ const initDB = async () => {
     await pool.query(`
       ALTER TABLE game_details
       ADD COLUMN IF NOT EXISTS phase TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE game_details
-      ADD COLUMN IF NOT EXISTS mapping_template_id TEXT;
     `);
 
     await pool.query(`
@@ -407,10 +353,6 @@ const initDB = async () => {
     `);
 
     await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_game_details_mapping_template_id ON game_details(mapping_template_id);
-    `);
-
-    await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_match_results_match_id ON match_results(match_id);
     `);
 
@@ -438,18 +380,6 @@ const initDB = async () => {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_match_result_players_team_id ON match_result_players(team_id);
-    `);
-
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_match_team_mappings_match_id ON match_team_mappings(match_id);
-    `);
-
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_match_team_mappings_permanent_team_id ON match_team_mappings(permanent_team_id);
-    `);
-
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_mapping_templates_updated_at ON mapping_templates(updated_at);
     `);
 
   } catch (err) {

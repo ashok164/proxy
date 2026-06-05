@@ -11,7 +11,7 @@ const {
   loadPlayersForMatchResults,
   saveMatchPlayers,
 } = require("../Data/matchMetadata");
-const { verifyAndCorrectTeamMappings } = require("../Data/teamIdentityVerifier");
+const { resolveTeamIdentities } = require("../Data/teamIdentityVerifier");
 
 const router = express.Router();
 
@@ -483,34 +483,6 @@ const normalizeResult = (input) => {
   };
 };
 
-const resolvePermanentTeamId = async (matchId, teamId) => {
-  const result = await pool.query(
-    `
-    SELECT permanent_team_id
-    FROM match_team_mappings
-    WHERE match_id = $1 AND room_team_id = $2
-    LIMIT 1
-    `,
-    [matchId, teamId],
-  );
-
-  return result.rows[0]?.permanent_team_id || teamId;
-};
-
-const resolveMappedPermanentTeamId = async (matchId, teamId) => {
-  const result = await pool.query(
-    `
-    SELECT permanent_team_id
-    FROM match_team_mappings
-    WHERE match_id = $1 AND room_team_id = $2
-    LIMIT 1
-    `,
-    [matchId, teamId],
-  );
-
-  return result.rows[0]?.permanent_team_id || null;
-};
-
 const saveRealtimeResultsForMatch = async (matchId) => {
   await ensureMatchResultsTable();
 
@@ -543,7 +515,7 @@ const saveRealtimeResultsForMatch = async (matchId) => {
 
   const savedRows = [];
   const skippedRows = [];
-  const verification = await verifyAndCorrectTeamMappings(pool, {
+  const verification = await resolveTeamIdentities(pool, {
     matchId,
     teams,
     getRoomTeamId: getRealtimeTeamId,
@@ -566,8 +538,7 @@ const saveRealtimeResultsForMatch = async (matchId) => {
     }
 
     const permanentTeamId =
-      verifiedRoomTeamMap[roomTeamId] ||
-      (await resolveMappedPermanentTeamId(matchId, roomTeamId));
+      verifiedRoomTeamMap[roomTeamId];
     if (!permanentTeamId || permanentTeamId === "-1") {
       skippedRows.push({
         roomTeamId,
@@ -645,7 +616,7 @@ const saveRealtimeResultsForMatch = async (matchId) => {
           roomTeamId,
           permanentTeamId,
           source,
-          teamMappingCorrections: verification.corrections,
+          teamIdentityMatches: verification.corrections,
         }),
       ],
     );
@@ -668,7 +639,7 @@ const saveRealtimeResultsForMatch = async (matchId) => {
     skippedRows,
     booyahDetected,
     finalDetected,
-    teamMappingCorrections: verification.corrections,
+    teamIdentityMatches: verification.corrections,
   };
 };
 
@@ -894,10 +865,10 @@ router.post("/create", async (req, res) => {
       return acc;
     }, {});
     const verifiedRoomMapsByMatch = {};
-    const teamMappingCorrections = [];
+    const teamIdentityMatches = [];
 
     for (const [recordMatchId, matchRecords] of Object.entries(recordsByMatch)) {
-      const verification = await verifyAndCorrectTeamMappings(pool, {
+      const verification = await resolveTeamIdentities(pool, {
         matchId: recordMatchId,
         teams: matchRecords.map((record) => record.rawPayload),
         getRoomTeamId: getRealtimeTeamId,
@@ -909,7 +880,7 @@ router.post("/create", async (req, res) => {
       });
 
       verifiedRoomMapsByMatch[recordMatchId] = verification.roomTeamMap || {};
-      teamMappingCorrections.push(
+      teamIdentityMatches.push(
         ...(verification.corrections || []).map((correction) => ({
           ...correction,
           matchId: recordMatchId,
@@ -924,8 +895,11 @@ router.post("/create", async (req, res) => {
         getRealtimeTeamId(record.rawPayload) || record.teamId,
       );
       record.teamId =
-        verifiedRoomMapsByMatch[record.matchId]?.[roomTeamId] ||
-        (await resolvePermanentTeamId(record.matchId, roomTeamId));
+        verifiedRoomMapsByMatch[record.matchId]?.[roomTeamId] || "";
+
+      if (!record.teamId || record.teamId === "-1") {
+        continue;
+      }
 
       const teamResult = await pool.query(
         `
@@ -989,7 +963,7 @@ router.post("/create", async (req, res) => {
             ...record.rawPayload,
             roomTeamId,
             permanentTeamId: record.teamId,
-            teamMappingCorrections,
+            teamIdentityMatches,
           }),
         ],
       );
@@ -1020,7 +994,7 @@ router.post("/create", async (req, res) => {
     return res.json({
       success: true,
       message: "Match results saved successfully",
-      teamMappingCorrections,
+      teamIdentityMatches,
       data: savedRows.map((row) =>
         formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage, bannerIndex),
       ),
@@ -1059,7 +1033,7 @@ router.post("/from-realtime/:matchId", async (req, res) => {
       matchId,
       booyahDetected: result.booyahDetected,
       finalDetected: result.finalDetected,
-      teamMappingCorrections: result.teamMappingCorrections || [],
+      teamIdentityMatches: result.teamIdentityMatches || [],
       skippedRows: result.skippedRows,
       data: result.savedRows.map((row) =>
         formatResultRowWithPlayers(row, baseUrl, playersByResult, booyahAssetImage, bannerIndex),
@@ -1100,7 +1074,7 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
         skippedCount: result.skippedRows.length,
         booyahDetected: result.booyahDetected,
         finalDetected: result.finalDetected,
-        teamMappingCorrections: result.teamMappingCorrections || [],
+        teamIdentityMatches: result.teamIdentityMatches || [],
       });
     }
 
@@ -1118,9 +1092,9 @@ router.post("/from-realtime/by-match-ids", async (req, res) => {
       message: "Realtime match results saved successfully",
       matchIds,
       matches: matchSummaries,
-      teamMappingCorrections: matchSummaries.flatMap(
+      teamIdentityMatches: matchSummaries.flatMap(
         (match) =>
-          (match.teamMappingCorrections || []).map((correction) => ({
+          (match.teamIdentityMatches || []).map((correction) => ({
             ...correction,
             matchId: match.matchId,
           })),

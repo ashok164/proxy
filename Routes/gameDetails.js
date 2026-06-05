@@ -59,7 +59,6 @@ const ensureGameDetailsTable = async () => {
       map_name TEXT,
       status TEXT,
       start_time TEXT,
-      mapping_template_id TEXT,
       enabled BOOLEAN NOT NULL DEFAULT false,
       details JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMP DEFAULT NOW(),
@@ -84,11 +83,6 @@ const ensureGameDetailsTable = async () => {
 
   await pool.query(`
     ALTER TABLE game_details
-    ADD COLUMN IF NOT EXISTS mapping_template_id TEXT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE game_details
     ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT false;
   `);
 
@@ -100,11 +94,6 @@ const ensureGameDetailsTable = async () => {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_game_details_match_id
     ON game_details(match_id);
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_game_details_mapping_template_id
-    ON game_details(mapping_template_id);
   `);
 
   gameDetailsTableReady = true;
@@ -153,10 +142,6 @@ const normalizePayload = (body = {}) => {
       getBodyValue(body, "startTime", "start_time", "startedAt", "started_at"),
       getBodyValue(details, "startTime", "start_time", "startedAt", "started_at"),
     ),
-    mappingTemplateId: firstValue(
-      getBodyValue(body, "mappingTemplateId", "mapping_template_id"),
-      getBodyValue(details, "mappingTemplateId", "mapping_template_id"),
-    ),
     enabled: firstValue(
       getBodyValue(body, "enabled", "isEnabled", "is_enabled"),
       getBodyValue(details, "enabled", "isEnabled", "is_enabled"),
@@ -171,7 +156,6 @@ const formatRow = (row) => ({
   roundName: row.round_name,
   phase: row.phase,
   matchId: row.match_id,
-  mappingTemplateId: row.mapping_template_id,
   enabled: row.enabled,
 });
 
@@ -199,12 +183,11 @@ router.post("/create", async (req, res) => {
         map_name,
         status,
         start_time,
-        mapping_template_id,
         enabled,
         details,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW())
       RETURNING *
       `,
       [
@@ -217,7 +200,6 @@ router.post("/create", async (req, res) => {
         toNullableString(input.mapName),
         toNullableString(input.status),
         toNullableString(input.startTime),
-        toNullableString(input.mappingTemplateId),
         toNullableBoolean(input.enabled) ?? false,
         JSON.stringify(input.details),
       ],
@@ -311,11 +293,10 @@ router.put("/update/:id", async (req, res) => {
         map_name = $7,
         status = $8,
         start_time = $9,
-        mapping_template_id = $10,
-        enabled = $11,
-        details = $12::jsonb,
+        enabled = $10,
+        details = $11::jsonb,
         updated_at = NOW()
-      WHERE id = $13
+      WHERE id = $12
       RETURNING *
       `,
       [
@@ -346,9 +327,6 @@ router.put("/update/:id", async (req, res) => {
         input.startTime !== undefined
           ? toNullableString(input.startTime)
           : existing.start_time,
-        input.mappingTemplateId !== undefined
-          ? toNullableString(input.mappingTemplateId)
-          : existing.mapping_template_id,
         input.enabled !== undefined
           ? toNullableBoolean(input.enabled) ?? false
           : existing.enabled,
@@ -393,7 +371,6 @@ router.delete("/delete/:id", async (req, res) => {
     const matchId = toNullableString(gameDetail.match_id);
     let deletedPlayers = 0;
     let deletedResults = 0;
-    let deletedMappings = 0;
 
     if (matchId) {
       const playerResult = await client.query(
@@ -404,14 +381,9 @@ router.delete("/delete/:id", async (req, res) => {
         "DELETE FROM match_results WHERE match_id = $1",
         [matchId],
       );
-      const mappingResult = await client.query(
-        "DELETE FROM match_team_mappings WHERE match_id = $1",
-        [matchId],
-      );
 
       deletedPlayers = playerResult.rowCount;
       deletedResults = resultResult.rowCount;
-      deletedMappings = mappingResult.rowCount;
     }
 
     const result = await client.query(
@@ -428,7 +400,6 @@ router.delete("/delete/:id", async (req, res) => {
       matchId,
       deletedPlayers,
       deletedResults,
-      deletedMappings,
     });
   } catch (err) {
     if (client) await client.query("ROLLBACK");
