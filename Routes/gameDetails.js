@@ -162,6 +162,9 @@ const formatRow = (row) => ({
   phase: row.phase,
   matchId: row.match_id,
   enabled: row.enabled,
+  resultEnabled: Boolean(row.details?.resultEnabled ?? row.details?.result_enabled ?? false),
+  todaysResultEnabled: Boolean(row.details?.todaysResultEnabled ?? row.details?.todays_result_enabled ?? false),
+  leagueStageResultEnabled: Boolean(row.details?.leagueStageResultEnabled ?? row.details?.league_stage_result_enabled ?? false),
 });
 
 const formatMatchNumberRow = (row) => ({
