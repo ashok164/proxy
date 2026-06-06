@@ -102,26 +102,39 @@ const fetchRealtimeMatch = async (matchId) => {
 const fetchCachedWebsocketMatch = (matchId, tournamentId = null) =>
   realtimeRoutes.getCachedStandings?.(matchId, tournamentId);
 
-const getRealtimeTeams = (data) =>
-  data?.data?.standings ||
-  data?.standings ||
-  (Array.isArray(data?.match_stats)
-    ? data.match_stats.flatMap((match) => match?.team_stats || [])
-    : null) ||
-  data?.match?.team_stats ||
-  data?.team_stats ||
-  data?.teams ||
-  [];
+const unwrapRealtimePayload = (data) => {
+  if (data?.data?.team_stats || data?.data?.match || data?.data?.match_stats) {
+    return data.data;
+  }
 
-const getRealtimePlayerStats = (data) =>
-  data?.match?.player_stats ||
-  data?.player_stats ||
-  data?.players ||
-  (Array.isArray(data?.match_stats)
-    ? data.match_stats.flatMap((match) =>
+  return data;
+};
+
+const getRealtimeTeams = (data) => {
+  const payload = unwrapRealtimePayload(data);
+
+  return payload?.standings ||
+  (Array.isArray(payload?.match_stats)
+    ? payload.match_stats.flatMap((match) => match?.team_stats || [])
+    : null) ||
+  payload?.match?.team_stats ||
+  payload?.team_stats ||
+  payload?.teams ||
+  [];
+};
+
+const getRealtimePlayerStats = (data) => {
+  const payload = unwrapRealtimePayload(data);
+
+  return payload?.match?.player_stats ||
+  payload?.player_stats ||
+  payload?.players ||
+  (Array.isArray(payload?.match_stats)
+    ? payload.match_stats.flatMap((match) =>
         (match?.team_stats || []).flatMap((team) => team?.player_stats || []),
       )
     : undefined);
+};
 
 const getRealtimeTeamId = (team = {}) =>
   firstValue(
@@ -776,7 +789,6 @@ const formatResultRow = (
   matchId: row.match_id,
   teamId: row.team_id,
   permanentTeamId: row.permanent_team_id || row.team_id,
-  permanent_team_id: row.permanent_team_id || row.team_id,
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
   teamName: row.team_name || "",
@@ -784,16 +796,9 @@ const formatResultRow = (
   kills: row.kills,
   placement: row.placement,
   booyahCount,
-  booyah_count: booyahCount,
-  wins: booyahCount,
   booyah_banner: getBooyahImageForCount(booyahCount, booyahAssetImage),
-  booyah_image: getBooyahImageForCount(booyahCount, booyahAssetImage),
   full_team_banner: fullTeamBanner,
   notification_team_banner: notificationTeamBanner,
-  booyahBanner: getBooyahImageForCount(booyahCount, booyahAssetImage),
-  booyahImage: getBooyahImageForCount(booyahCount, booyahAssetImage),
-  fullTeamBanner,
-  notificationTeamBanner,
   totalKills: row.total_kills,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -821,8 +826,6 @@ const formatResultRowWithPlayers = (
       teamTag: formattedRow.teamTag,
       full_team_banner: formattedRow.full_team_banner,
       notification_team_banner: formattedRow.notification_team_banner,
-      fullTeamBanner: formattedRow.fullTeamBanner,
-      notificationTeamBanner: formattedRow.notificationTeamBanner,
     })),
   };
 };
@@ -842,7 +845,6 @@ const formatAggregateRow = (
   return {
   teamId: row.team_id,
   permanentTeamId: row.permanent_team_id || row.team_id,
-  permanent_team_id: row.permanent_team_id || row.team_id,
   teamLogo: formatImageUrl(baseUrl, row.team_logo),
   countryLogo: formatImageUrl(baseUrl, row.country_logo),
   teamName: row.team_name || "",
@@ -850,16 +852,9 @@ const formatAggregateRow = (
   kills: Number(row.kills),
   placement: Number(row.placement),
   booyahCount,
-  booyah_count: booyahCount,
-  wins: booyahCount,
   booyah_banner: getBooyahImageForCount(booyahCount, booyahAssetImage),
-  booyah_image: getBooyahImageForCount(booyahCount, booyahAssetImage),
   full_team_banner: fullTeamBanner,
   notification_team_banner: notificationTeamBanner,
-  booyahBanner: getBooyahImageForCount(booyahCount, booyahAssetImage),
-  booyahImage: getBooyahImageForCount(booyahCount, booyahAssetImage),
-  fullTeamBanner,
-  notificationTeamBanner,
   totalKills: Number(row.total_kills),
   totalPoints: Number(row.total_kills),
   totalScore: Number(row.total_kills),
@@ -1436,8 +1431,7 @@ router.get("/team-stats/:matchId", async (req, res) => {
         teamTag: team.teamTag,
         teamLogo: team.teamLogo,
         countryLogo: team.countryLogo,
-        booyahBanner: team.booyahBanner,
-        booyahImage: team.booyahImage,
+        booyah_banner: team.booyah_banner,
         kills: team.kills,
         placement: team.placement,
         booyahCount: team.booyahCount,
@@ -1500,8 +1494,7 @@ router.get("/booyah/:matchId", async (req, res) => {
         team_name: team.teamName,
         team_logo: team.teamLogo,
         country_logo: team.countryLogo,
-        booyah_banner: team.booyahBanner,
-        booyah_image: team.booyahImage,
+        booyah_banner: team.booyah_banner,
         placement: 1,
         players: team.players,
       })),
@@ -1570,12 +1563,9 @@ router.get("/booyah-result/:id", async (req, res) => {
         team_name: team.teamName,
         team_logo: team.teamLogo,
         country_logo: team.countryLogo,
-        full_team_banner: team.fullTeamBanner,
-        notification_team_banner: team.notificationTeamBanner,
-        booyah_banner: team.booyahBanner,
-        booyah_image: team.booyahImage,
-        fullTeamBanner: team.fullTeamBanner,
-        notificationTeamBanner: team.notificationTeamBanner,
+        full_team_banner: team.full_team_banner,
+        notification_team_banner: team.notification_team_banner,
+        booyah_banner: team.booyah_banner,
         placement: 1,
         players: team.players,
       },
