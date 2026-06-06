@@ -506,6 +506,46 @@ router.get("/all", async (req, res) => {
   }
 });
 
+/* =========================================================
+   GET TODAYS PLAYING TEAMS FOR SHEETS / APP SCRIPT
+========================================================= */
+router.get("/todays-playing", async (req, res) => {
+  try {
+    const baseUrl = getBaseUrl(req);
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureTeamTableScope();
+
+    const sql = [
+      "SELECT id, team_id, permanent_team_id, team_name, short_tag, team_logo",
+      "FROM teams",
+      "WHERE tournament_id = $1 AND is_playing = true",
+      "ORDER BY",
+      "CASE WHEN team_id ~ '^[0-9]+$' THEN team_id::BIGINT END ASC NULLS LAST,",
+      "team_id ASC",
+    ].join("\n");
+
+    const result = await pool.query(sql, [tournamentId]);
+
+    const data = result.rows.map((row) => {
+      const logo = formatImageUrl(baseUrl, row.team_logo) || "";
+      return {
+        id: row.id,
+        teamId: row.team_id,
+        permanentTeamId: row.permanent_team_id || row.team_id,
+        name: row.team_name || "",
+        tag: row.short_tag || "",
+        logo,
+        teamLogo: logo,
+      };
+    });
+
+    res.json({ success: true, count: data.length, data });
+  } catch (err) {
+    console.error(err);
+    res.status(err.statusCode || 500).json({ success: false, message: err.message });
+  }
+});
+
 router.patch("/:id/playing", async (req, res) => {
   try {
     const baseUrl = getBaseUrl(req);

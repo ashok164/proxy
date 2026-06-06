@@ -78,6 +78,7 @@ app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
 app.use("/", teamPlayerRoutes);
 app.use("/", teamPlayerRoutes);
+app.use("/:tournamentSlug/api/teams", teamRoutes);
 app.use("/api/teams", teamRoutes);
 app.use("/api/theme", themeColorRoutes);
 app.use("/api/auth", authRoutes);
