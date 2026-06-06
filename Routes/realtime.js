@@ -954,6 +954,8 @@ const compactRealtimeTeam = (team = {}) => {
       team.notificationTeamBanner,
       "",
     ),
+    booyah_count: firstValue(team.booyah_count, team.booyahCount, 0),
+    booyahCount: firstValue(team.booyahCount, team.booyah_count, 0),
     booyah_banner: firstValue(team.booyah_banner, team.booyah_image, team.booyahBanner, ""),
     rank: firstValue(team.rank, 0),
     killing_score: getTeamKills(team),
