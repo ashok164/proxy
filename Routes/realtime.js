@@ -1687,7 +1687,12 @@ router.get("/settings", async (req, res) => {
   }
 });
 
-router.get("/api/broadcast-display-settings", async (req, res) => {
+const broadcastDisplaySettingsRoutes = [
+  "/api/broadcast-display-settings",
+  "/:tournamentSlug/api/broadcast-display-settings",
+];
+
+router.get(broadcastDisplaySettingsRoutes, async (req, res) => {
   try {
     const tournamentId = await getTournamentIdFromRequest(pool, req);
     const settings = await getTournamentSettings(tournamentId);
@@ -1706,7 +1711,7 @@ router.get("/api/broadcast-display-settings", async (req, res) => {
   }
 });
 
-router.patch("/api/broadcast-display-settings", async (req, res) => {
+router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
   try {
     const tournamentId = await getTournamentIdFromRequest(pool, req);
     await ensureTournamentSettingsTable();
