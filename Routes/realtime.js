@@ -269,6 +269,26 @@ const hasTeamBooyah = (team = {}) => {
   });
 };
 
+const getTeamBooyahCount = (team = {}) => {
+  const explicitValue = firstValue(
+    team.booyah_count,
+    team.booyahCount,
+    team.booyah_counter,
+    team.booyahCounter,
+  );
+
+  if (explicitValue !== undefined && explicitValue !== null && explicitValue !== "") {
+    if (typeof explicitValue === "boolean") return explicitValue ? 1 : 0;
+
+    const clean = String(explicitValue).trim().toLowerCase();
+    if (["true", "yes", "y", "win", "winner", "booyah"].includes(clean)) return 1;
+
+    return Math.max(0, toNumber(explicitValue));
+  }
+
+  return hasTeamBooyah(team) ? 1 : 0;
+};
+
 const isFinalTeamResult = (team = {}) => {
   const value = firstValue(team.final, team.is_final, team.isFinal);
   if (typeof value === "boolean") return value;
@@ -1148,7 +1168,8 @@ const mergeTeam = (
   const teamBanners = teamIdKey ? bannerIndex[teamIdKey] || {} : {};
   const fullTeamBanner = teamBanners.fullTeamBanner || "";
   const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
-  const booyahBanner = hasTeamBooyah(team) ? booyahAssetImage : "";
+  const booyahCount = getTeamBooyahCount(team);
+  const booyahBanner = booyahCount > 0 ? booyahAssetImage : "";
 
   /* ================= FINAL MERGED VALUES ================= */
   const finalTeamName = dbTeamName || dbShortTag || "";
@@ -1218,6 +1239,7 @@ const mergeTeam = (
     team_logo: finalTeamLogo,
     full_team_banner: fullTeamBanner,
     notification_team_banner: notificationTeamBanner,
+    booyah_count: booyahCount,
     booyah_banner: booyahBanner,
     booyah_image: booyahBanner,
 
@@ -1227,6 +1249,7 @@ const mergeTeam = (
     teamLogo: finalTeamLogo,
     fullTeamBanner,
     notificationTeamBanner,
+    booyahCount,
     booyahBanner,
     booyahImage: booyahBanner,
 

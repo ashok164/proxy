@@ -121,6 +121,48 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(numberValue) ? numberValue : fallback;
 };
 
+const hasTeamBooyah = (team = {}) => {
+  const values = [
+    team.booyah_count,
+    team.booyahCount,
+    team.booyah_counter,
+    team.booyahCounter,
+    team.booyah,
+    team.is_booyah,
+    team.isBooyah,
+    team.has_booyah,
+    team.hasBooyah,
+    team.winner,
+    team.isWinner,
+    team.is_winner,
+  ];
+
+  return values.some((value) => {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value > 0;
+    const clean = String(value ?? "").trim().toLowerCase();
+    return ["true", "1", "yes", "y", "win", "winner", "booyah"].includes(clean);
+  });
+};
+
+const getTeamBooyahCount = (team = {}) => {
+  const explicitValue = firstValue(
+    team.booyah_count,
+    team.booyahCount,
+    team.booyah_counter,
+    team.booyahCounter,
+  );
+
+  if (explicitValue !== undefined && explicitValue !== null && explicitValue !== "") {
+    if (typeof explicitValue === "boolean") return explicitValue ? 1 : 0;
+    const clean = String(explicitValue).trim().toLowerCase();
+    if (["true", "yes", "y", "win", "winner", "booyah"].includes(clean)) return 1;
+    return Math.max(0, toNumber(explicitValue));
+  }
+
+  return hasTeamBooyah(team) ? 1 : 0;
+};
+
 const normalizeTeamIdKey = (value) => {
   const clean = String(value ?? "").trim();
   if (!clean) return "";
@@ -209,6 +251,8 @@ const compactTeam = (team) => {
         ? team.players
         : [];
 
+  const booyahCount = getTeamBooyahCount(team);
+
   return {
     id: normalizeTeamIdKey(getTeamId(team)),
     rid: normalizeTeamIdKey(firstValue(team.room_team_id, team.roomTeamId, "")),
@@ -225,6 +269,9 @@ const compactTeam = (team) => {
     tl: team.team_logo || team.teamLogo || "",
     fb: team.full_team_banner || team.fullTeamBanner || "",
     nb: team.notification_team_banner || team.notificationTeamBanner || "",
+    bc: booyahCount,
+    booyah_count: booyahCount,
+    booyahCount,
   };
 };
 
