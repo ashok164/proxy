@@ -932,10 +932,18 @@ const compactRealtimePlayer = (player = {}) => ({
   },
   player_image: firstValue(player.player_image, player.player_pic, player.playerPic, ""),
   camera_link: firstValue(player.camera_link, player.cameraLink, ""),
+  kills: toNumber(firstValue(player.kills, player.kill, player.kill_count, player.killCount, 0)),
+  damage: toNumber(firstValue(player.damage, player.damage_dealt, player.damageDealt, 0)),
+  assists: toNumber(firstValue(player.assists, player.assist, player.assist_count, player.assistCount, 0)),
+  knockdowns: toNumber(firstValue(player.knockdowns, player.knock_downs, player.knockDowns, player.knocks, player.knock_down, 0)),
+  survival_time: toNumber(firstValue(player.survival_time, player.survivalTime, player.survival, 0)),
   character: player.character,
   active_skill: player.active_skill || player.activeSkill,
+  passive_skills: firstValue(player.passive_skills, player.passiveSkills, []),
+  weapon_used: firstValue(player.weapon_used, player.weaponUsed, player.weapon, {}),
   weapon: player.weapon,
   pet: player.pet,
+  equipment_loadouts: firstValue(player.equipment_loadouts, player.equipmentLoadouts, []),
 });
 
 const compactRealtimeTeam = (team = {}) => {

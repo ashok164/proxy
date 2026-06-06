@@ -283,9 +283,17 @@ const getRealtimeBooyahCount = (team = {}) => {
   return hasRealtimeBooyah(team) ? 1 : 0;
 };
 
+const isWinnerPlacement = (value) => toInteger(value) === 1;
+
 const getStoredBooyahCount = (row = {}) => {
   const storedCount = toInteger(row.booyah_count);
-  return storedCount > 0 ? storedCount : getRealtimeBooyahCount(row.raw_payload || {});
+  if (storedCount > 0) return storedCount;
+
+  const rawPayload = row.raw_payload || {};
+  const rawCount = getRealtimeBooyahCount(rawPayload);
+  if (rawCount > 0) return rawCount;
+
+  return isWinnerPlacement(firstValue(row.placement, rawPayload.placement, rawPayload.rank, rawPayload.match_rank, rawPayload.survival_score)) ? 1 : 0;
 };
 
 const BOOYAH_COUNT_SQL = `
@@ -296,6 +304,11 @@ const BOOYAH_COUNT_SQL = `
     WHEN (raw_payload->>'booyah_counter') ~ '^[0-9]+$' THEN (raw_payload->>'booyah_counter')::integer
     WHEN (raw_payload->>'booyahCounter') ~ '^[0-9]+$' THEN (raw_payload->>'booyahCounter')::integer
     WHEN LOWER(COALESCE(raw_payload->>'booyah', raw_payload->>'is_booyah', raw_payload->>'isBooyah', raw_payload->>'winner', raw_payload->>'isWinner', raw_payload->>'is_winner', '')) IN ('true', '1', 'yes', 'y', 'win', 'winner', 'booyah') THEN 1
+    WHEN placement = 1 THEN 1
+    WHEN (raw_payload->>'placement') ~ '^[0-9]+$' AND (raw_payload->>'placement')::integer = 1 THEN 1
+    WHEN (raw_payload->>'rank') ~ '^[0-9]+$' AND (raw_payload->>'rank')::integer = 1 THEN 1
+    WHEN (raw_payload->>'match_rank') ~ '^[0-9]+$' AND (raw_payload->>'match_rank')::integer = 1 THEN 1
+    WHEN (raw_payload->>'survival_score') ~ '^[0-9]+$' AND (raw_payload->>'survival_score')::integer = 1 THEN 1
     ELSE 0
   END
 `;
