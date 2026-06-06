@@ -244,11 +244,48 @@ const hasRealtimeBooyah = (team = {}) => {
 
   return values.some((value) => {
     if (typeof value === "boolean") return value;
-    if (typeof value === "number") return value === 1;
+    if (typeof value === "number") return value > 0;
     const clean = String(value ?? "").trim().toLowerCase();
     return ["true", "1", "yes", "y", "win", "winner", "booyah"].includes(clean);
   });
 };
+
+const getRealtimeBooyahCount = (team = {}) => {
+  const explicitValue = firstValue(
+    team.booyah_count,
+    team.booyahCount,
+    team.booyah_counter,
+    team.booyahCounter,
+  );
+
+  if (explicitValue !== undefined && explicitValue !== null && explicitValue !== "") {
+    if (typeof explicitValue === "boolean") return explicitValue ? 1 : 0;
+
+    const clean = String(explicitValue).trim().toLowerCase();
+    if (["true", "yes", "y", "win", "winner", "booyah"].includes(clean)) return 1;
+
+    return Math.max(0, toInteger(explicitValue));
+  }
+
+  return hasRealtimeBooyah(team) ? 1 : 0;
+};
+
+const getStoredBooyahCount = (row = {}) => {
+  const storedCount = toInteger(row.booyah_count);
+  return storedCount > 0 ? storedCount : getRealtimeBooyahCount(row.raw_payload || {});
+};
+
+const BOOYAH_COUNT_SQL = `
+  CASE
+    WHEN booyah_count > 0 THEN booyah_count
+    WHEN (raw_payload->>'booyah_count') ~ '^[0-9]+$' THEN (raw_payload->>'booyah_count')::integer
+    WHEN (raw_payload->>'booyahCount') ~ '^[0-9]+$' THEN (raw_payload->>'booyahCount')::integer
+    WHEN (raw_payload->>'booyah_counter') ~ '^[0-9]+$' THEN (raw_payload->>'booyah_counter')::integer
+    WHEN (raw_payload->>'booyahCounter') ~ '^[0-9]+$' THEN (raw_payload->>'booyahCounter')::integer
+    WHEN LOWER(COALESCE(raw_payload->>'booyah', raw_payload->>'is_booyah', raw_payload->>'isBooyah', raw_payload->>'winner', raw_payload->>'isWinner', raw_payload->>'is_winner', '')) IN ('true', '1', 'yes', 'y', 'win', 'winner', 'booyah') THEN 1
+    ELSE 0
+  END
+`;
 
 const isRealtimeFinal = (team = {}) => {
   const value = firstValue(team.final, team.is_final, team.isFinal);
@@ -524,7 +561,6 @@ const normalizeResult = (input) => {
   const placement = toInteger(
     getBodyValue(input, "placement", "ranking_score", "rankingScore"),
   );
-  const explicitBooyahCount = getBodyValue(input, "booyahCount", "booyah_count");
   const explicitTotalKills = getBodyValue(input, "totalKills", "total_kills", "totalScore", "total_score");
 
   return {
@@ -540,12 +576,7 @@ const normalizeResult = (input) => {
     ),
     kills,
     placement,
-    booyahCount:
-      explicitBooyahCount !== undefined
-        ? toInteger(explicitBooyahCount)
-        : hasRealtimeBooyah(input)
-          ? 1
-          : 0,
+    booyahCount: getRealtimeBooyahCount(input),
     totalKills:
       explicitTotalKills !== undefined
         ? toInteger(explicitTotalKills)
@@ -635,7 +666,7 @@ const saveRealtimeResultsForMatch = async (matchId, tournamentId = null) => {
     const teamMeta = teamResult.rows[0] || {};
     const kills = getRealtimeKills(team);
     const placement = getRealtimePlacementPoints(team);
-    const booyahCount = hasRealtimeBooyah(team) ? 1 : 0;
+    const booyahCount = getRealtimeBooyahCount(team);
     const totalKills = getRealtimeTotalScore(team);
     const teamName = teamMeta.team_name || getRealtimeTeamName(team) || "";
     const teamTag = teamMeta.short_tag || getRealtimeTeamTag(team) || "";
@@ -738,6 +769,7 @@ const formatResultRow = (
   const teamBanners = getTeamBanners(bannerIndex, row.team_id);
   const fullTeamBanner = teamBanners.fullTeamBanner || "";
   const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
+  const booyahCount = getStoredBooyahCount(row);
 
   return {
   id: row.id,
@@ -751,13 +783,15 @@ const formatResultRow = (
   teamTag: row.team_tag || "",
   kills: row.kills,
   placement: row.placement,
-  booyahCount: row.booyah_count,
-  booyah_banner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
-  booyah_image: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahCount,
+  booyah_count: booyahCount,
+  wins: booyahCount,
+  booyah_banner: getBooyahImageForCount(booyahCount, booyahAssetImage),
+  booyah_image: getBooyahImageForCount(booyahCount, booyahAssetImage),
   full_team_banner: fullTeamBanner,
   notification_team_banner: notificationTeamBanner,
-  booyahBanner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
-  booyahImage: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahBanner: getBooyahImageForCount(booyahCount, booyahAssetImage),
+  booyahImage: getBooyahImageForCount(booyahCount, booyahAssetImage),
   fullTeamBanner,
   notificationTeamBanner,
   totalKills: row.total_kills,
@@ -803,6 +837,7 @@ const formatAggregateRow = (
   const teamBanners = getTeamBanners(bannerIndex, row.team_id);
   const fullTeamBanner = teamBanners.fullTeamBanner || "";
   const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
+  const booyahCount = Number(row.booyah_count || 0);
 
   return {
   teamId: row.team_id,
@@ -814,17 +849,22 @@ const formatAggregateRow = (
   teamTag: row.team_tag || "",
   kills: Number(row.kills),
   placement: Number(row.placement),
-  booyahCount: Number(row.booyah_count),
-  booyah_banner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
-  booyah_image: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahCount,
+  booyah_count: booyahCount,
+  wins: booyahCount,
+  booyah_banner: getBooyahImageForCount(booyahCount, booyahAssetImage),
+  booyah_image: getBooyahImageForCount(booyahCount, booyahAssetImage),
   full_team_banner: fullTeamBanner,
   notification_team_banner: notificationTeamBanner,
-  booyahBanner: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
-  booyahImage: getBooyahImageForCount(row.booyah_count, booyahAssetImage),
+  booyahBanner: getBooyahImageForCount(booyahCount, booyahAssetImage),
+  booyahImage: getBooyahImageForCount(booyahCount, booyahAssetImage),
   fullTeamBanner,
   notificationTeamBanner,
   totalKills: Number(row.total_kills),
+  totalPoints: Number(row.total_kills),
+  totalScore: Number(row.total_kills),
   matchesPlayed: Number(row.matches_played),
+  played: Number(row.matches_played),
   players: playersByTeam[row.team_id] || [],
   };
 };
@@ -909,7 +949,7 @@ const queryMatchResults = async (matchIds, tournamentId) => {
       COALESCE(MAX(NULLIF(team_tag, '')), '') AS team_tag,
       SUM(kills) AS kills,
       SUM(placement) AS placement,
-      SUM(booyah_count) AS booyah_count,
+      SUM(${BOOYAH_COUNT_SQL}) AS booyah_count,
       SUM(total_kills) AS total_kills,
       COUNT(DISTINCT match_id) AS matches_played
     FROM match_results
@@ -918,7 +958,7 @@ const queryMatchResults = async (matchIds, tournamentId) => {
     ORDER BY
       SUM(total_kills) DESC,
       SUM(kills) DESC,
-      SUM(booyah_count) DESC,
+      SUM(${BOOYAH_COUNT_SQL}) DESC,
       SUM(placement) DESC,
       COALESCE(MAX(NULLIF(team_name, '')), '') ASC
     `,
@@ -1450,9 +1490,7 @@ router.get("/booyah/:matchId", async (req, res) => {
       baseUrl,
       tournamentId,
     );
-    const booyahTeams = teams.filter(
-      (team) => team.placement === 1 || team.booyahCount > 0,
-    );
+    const booyahTeams = teams.filter((team) => team.booyahCount > 0);
 
     return res.json({
       success: true,
@@ -1495,8 +1533,8 @@ router.get("/booyah-result/:id", async (req, res) => {
       `
       SELECT *
       FROM match_results
-      WHERE match_id = $1 AND tournament_id = $2 AND (placement = 1 OR booyah_count > 0)
-      ORDER BY booyah_count DESC, placement ASC, total_kills DESC
+      WHERE match_id = $1 AND tournament_id = $2 AND (${BOOYAH_COUNT_SQL}) > 0
+      ORDER BY (${BOOYAH_COUNT_SQL}) DESC, placement ASC, total_kills DESC
       LIMIT 1
       `,
       [sourceResult.rows[0].match_id, tournamentId],
