@@ -490,7 +490,8 @@ router.get("/:moduleName/all", async (req, res) => {
   try {
     const { tournamentId, pullTournamentAssets } = await getTournamentAssetScopeFromRequest(pool, req);
     await ensureAssetTableScope(config.table);
-    const result = pullTournamentAssets
+    const canPullSharedAssets = moduleName === "tournamentAssets" && pullTournamentAssets;
+    const result = canPullSharedAssets
       ? await pool.query(
           `
           SELECT
