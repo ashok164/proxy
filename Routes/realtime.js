@@ -1151,17 +1151,13 @@ const mergeTeam = (
   const booyahBanner = hasTeamBooyah(team) ? booyahAssetImage : "";
 
   /* ================= FINAL MERGED VALUES ================= */
-  const finalTeamName = dbTeamName || getTeamName(team) || "";
+  const finalTeamName = dbTeamName || dbShortTag || "";
 
-  const finalShortTag = dbShortTag || getTeamTag(team) || "";
+  const finalShortTag = dbShortTag || dbTeamName || "";
 
-  let finalCountryLogo = dbCountryLogo
-    ? formatImgUri(dbCountryLogo)
-    : formatImgUri(firstValue(team.country_logo, team.countryLogo, team.flag));
+  let finalCountryLogo = dbCountryLogo ? formatImgUri(dbCountryLogo) : "";
 
-  let finalTeamLogo = dbTeamLogo
-    ? formatImgUri(dbTeamLogo)
-    : formatImgUri(firstValue(team.team_logo, team.teamLogo, team.logo));
+  let finalTeamLogo = dbTeamLogo ? formatImgUri(dbTeamLogo) : "";
 
   if (teamIdKey && logoCache[teamIdKey]) {
     finalCountryLogo =
@@ -1329,19 +1325,21 @@ const buildStandings = async (id, logoCache = {}, tournamentId = null) => {
     tournamentId,
     playingOnly: true,
   });
-  const teams = rawTeams.map((team) =>
-    mergeTeam(
-      team,
-      metaIndex,
-      logoCache,
-      playerIndex,
-      externalPlayerStats,
-      roomTeamMap,
-      assetLookup,
-      bannerIndex,
-      booyahAssetImage,
-    ),
-  );
+  const teams = rawTeams
+    .map((team) =>
+      mergeTeam(
+        team,
+        metaIndex,
+        logoCache,
+        playerIndex,
+        externalPlayerStats,
+        roomTeamMap,
+        assetLookup,
+        bannerIndex,
+        booyahAssetImage,
+      ),
+    )
+    .filter((team) => team.identityMatched);
   const overallLeaderboard = await buildOverallLeaderboard(
     id,
     teams,
