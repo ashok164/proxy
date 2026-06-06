@@ -21,6 +21,9 @@ const {
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
 const TARGET_IP = process.env.VPS_IP || "82.29.155.252";
+const VPS_PROXY_BASE_URL =
+  process.env.VPS_PROXY_BASE_URL ||
+  (TARGET_IP ? `http://${TARGET_IP}:${process.env.VPS_PORT || process.env.PORT || 3000}` : "");
 
 // ⚡ Global In-Memory RAM Cache to guarantee 0ms instant browser delivery
 const matchCache = {};
@@ -54,7 +57,7 @@ const getHeaders = () => ({
   "Client-ID": CLIENT_ID,
 });
 
-const fetchMatch = async (id) => {
+const fetchGarenaMatch = async (id) => {
   const config = {
     headers: getHeaders(),
     timeout: 5000,
@@ -66,6 +69,42 @@ const fetchMatch = async (id) => {
 
   const res = await axios.get(`${API_URL}/${id}`, config);
   return res.data;
+};
+
+const shouldUseVpsProxy = () =>
+  !isIpValidOnMachine &&
+  Boolean(VPS_PROXY_BASE_URL) &&
+  String(process.env.USE_VPS_UPSTREAM_PROXY || "true").toLowerCase() !== "false";
+
+const fetchMatch = async (id) => {
+  if (shouldUseVpsProxy()) {
+    const proxyUrl = `${VPS_PROXY_BASE_URL.replace(/\/$/, "")}/internal/garena-match/${encodeURIComponent(id)}`;
+    const res = await axios.get(proxyUrl, { timeout: 7000 });
+    return res.data?.data || res.data;
+  }
+
+  return fetchGarenaMatch(id);
+};
+
+const getUpstreamErrorStatus = (err) => err?.response?.status || null;
+
+const formatUpstreamError = (err) => {
+  const status = getUpstreamErrorStatus(err);
+  const detail = err?.response?.data;
+  const detailText =
+    typeof detail === "string"
+      ? detail
+      : detail
+        ? JSON.stringify(detail)
+        : "";
+
+  return [
+    err.message,
+    status ? `status=${status}` : "",
+    detailText ? `body=${detailText.slice(0, 300)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
 };
 
 const getTeams = (data) => {
@@ -312,6 +351,28 @@ const getBooyahAssetImage = async (tournamentId = null) => {
   }
 };
 
+const getChampionBannerImage = async (tournamentId = null) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT image_url
+      FROM tournament_assets
+      WHERE asset_id = $1 AND active = true AND ($2::integer IS NULL OR tournament_id = $2)
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      ["2", tournamentId],
+    );
+
+    return formatUploadUri(result.rows[0]?.image_url || "");
+  } catch (err) {
+    if (!["42P01", "42703"].includes(err.code)) {
+      console.error("Champion banner tournament asset lookup failed:", err.message);
+    }
+    return "";
+  }
+};
+
 const addBannerToIndex = (index, row, key) => {
   const teamIdKey = normalizeTeamIdKey(row.team_id);
   if (!teamIdKey || !row.image_url) return;
@@ -369,6 +430,10 @@ const ensureTournamentSettingsTable = async () => {
       id SERIAL PRIMARY KEY,
       tournament_id INTEGER,
       overall_ranking_enabled BOOLEAN NOT NULL DEFAULT false,
+      broadcast_theme_enabled BOOLEAN NOT NULL DEFAULT true,
+      champion_rush_enabled BOOLEAN NOT NULL DEFAULT false,
+      show_country_flags BOOLEAN NOT NULL DEFAULT false,
+      show_live_standings_points BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
@@ -376,6 +441,22 @@ const ensureTournamentSettingsTable = async () => {
   await pool.query(`
     ALTER TABLE tournament_settings
     ADD COLUMN IF NOT EXISTS overall_ranking_enabled BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS broadcast_theme_enabled BOOLEAN NOT NULL DEFAULT true
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS champion_rush_enabled BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS show_country_flags BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS show_live_standings_points BOOLEAN NOT NULL DEFAULT false
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tournament_settings_tournament_unique
@@ -401,14 +482,25 @@ const getTournamentSettings = async (tournamentId = null) => {
     VALUES ($1, NOW())
     ON CONFLICT (tournament_id) DO UPDATE
     SET updated_at = tournament_settings.updated_at
-    RETURNING overall_ranking_enabled
+    RETURNING
+      overall_ranking_enabled,
+      broadcast_theme_enabled,
+      champion_rush_enabled,
+      show_country_flags,
+      show_live_standings_points
     `,
     [tournamentId],
   );
 
+  const row = result.rows[0] || {};
+
   return {
-    overallRankingEnabled: Boolean(result.rows[0]?.overall_ranking_enabled),
-    overall_ranking_enabled: Boolean(result.rows[0]?.overall_ranking_enabled),
+    overallRankingEnabled: Boolean(row.overall_ranking_enabled),
+    overall_ranking_enabled: Boolean(row.overall_ranking_enabled),
+    broadcastThemeEnabled: Boolean(row.broadcast_theme_enabled),
+    championRushEnabled: Boolean(row.champion_rush_enabled),
+    showCountryFlags: Boolean(row.show_country_flags),
+    showLiveStandingsPoints: Boolean(row.show_live_standings_points),
   };
 };
 
@@ -1218,11 +1310,13 @@ const buildStandings = async (id, logoCache = {}, tournamentId = null) => {
     playerIndex,
     bannerIndex,
     booyahAssetImage,
+    championBanner,
     assetLookup,
   } = meta;
   const externalPlayerStats = getPlayerStats(data);
   const rawTeams = getTeams(data);
   const settings = await getTournamentSettings(tournamentId);
+  const activeChampionBanner = settings.championRushEnabled ? championBanner : "";
   const {
     roomTeamMap,
     corrections: teamIdentityMatches,
@@ -1268,6 +1362,7 @@ const buildStandings = async (id, logoCache = {}, tournamentId = null) => {
     matchId: id,
     schema: "realtime.v2",
     settings,
+    champion_banner: activeChampionBanner,
     teamIdentityMatches,
     teamIdentityDetections,
     liveStandings2: liveOverall,
@@ -1291,6 +1386,7 @@ const buildLiveBroadcastPayload = (standings = {}) => ({
   schema: standings.schema || "realtime.v2",
   matchId: standings.matchId,
   settings: standings.settings || {},
+  champion_banner: standings.champion_banner || "",
   teamIdentityMatches: standings.teamIdentityMatches || [],
   liveMatchStandings: standings.liveMatchStandings || [],
   liveOverall: standings.liveOverall || [],
@@ -1328,14 +1424,23 @@ const getRealtimeMeta = async (tournamentId = null) => {
     buildPlayerIndex(tournamentId),
     buildTeamBannerIndex(tournamentId),
     getBooyahAssetImage(tournamentId),
+    getChampionBannerImage(tournamentId),
     buildAssetLookup(pool, process.env.BASE_URL || "http://82.29.155.252:3000"),
   ])
-    .then(([metaIndex, playerIndex, bannerIndex, booyahAssetImage, assetLookup]) => {
+    .then(([
+      metaIndex,
+      playerIndex,
+      bannerIndex,
+      booyahAssetImage,
+      championBanner,
+      assetLookup,
+    ]) => {
       const data = {
         metaIndex,
         playerIndex,
         bannerIndex,
         booyahAssetImage,
+        championBanner,
         assetLookup,
       };
       realtimeMetaCache.data[cacheKey] = data;
@@ -1390,6 +1495,7 @@ const startCentralEngine = (matchId, tournamentId = null) => {
 
     entry.refreshing = true;
     entry.timerId = null;
+    let retryDelayMs = getPushIntervalMs();
 
     try {
       const standings = await buildStandings(matchId, entry.logoCache, tournamentId);
@@ -1407,13 +1513,17 @@ const startCentralEngine = (matchId, tournamentId = null) => {
         }
       }
     } catch (err) {
+      const upstreamStatus = getUpstreamErrorStatus(err);
+      if (upstreamStatus >= 400 && upstreamStatus < 500) {
+        retryDelayMs = Math.max(5000, retryDelayMs);
+      }
       console.error(
         `❌ Central Worker Loop Error [Match ID: ${matchId}]:`,
-        err.message,
+        formatUpstreamError(err),
       );
     } finally {
       entry.refreshing = false;
-      entry.timerId = setTimeout(tick, getPushIntervalMs());
+      entry.timerId = setTimeout(tick, retryDelayMs);
     }
   };
 
@@ -1513,6 +1623,29 @@ const handleWS = async (req, socket) => {
 };
 
 /* ================= HIGH SPEED BROWSER HTTP ENDPOINTS ================= */
+router.get("/internal/garena-match/:matchId", async (req, res) => {
+  try {
+    const matchId = String(req.params.matchId || "").trim();
+    if (!matchId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "matchId is required" });
+    }
+
+    const data = await fetchGarenaMatch(matchId);
+    return res.json({ success: true, matchId, data });
+  } catch (err) {
+    console.error("Internal Garena match proxy failed:", formatUpstreamError(err));
+
+    const status = err.response?.status || 500;
+    return res.status(status).json({
+      success: false,
+      message: err.response?.data?.message || err.message,
+      data: err.response?.data,
+    });
+  }
+});
+
 router.get("/raw/:matchId", async (req, res) => {
   try {
     const matchId = String(req.params.matchId || "").trim();
@@ -1550,6 +1683,99 @@ router.get("/settings", async (req, res) => {
     return res.json({ success: true, data: settings });
   } catch (err) {
     console.error("Realtime settings fetch failed:", err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.get("/api/broadcast-display-settings", async (req, res) => {
+  try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    const settings = await getTournamentSettings(tournamentId);
+    return res.json({
+      success: true,
+      settings: {
+        broadcastThemeEnabled: settings.broadcastThemeEnabled,
+        championRushEnabled: settings.championRushEnabled,
+        showCountryFlags: settings.showCountryFlags,
+        showLiveStandingsPoints: settings.showLiveStandingsPoints,
+      },
+    });
+  } catch (err) {
+    console.error("Broadcast display settings fetch failed:", err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+router.patch("/api/broadcast-display-settings", async (req, res) => {
+  try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    await ensureTournamentSettingsTable();
+
+    const current = await getTournamentSettings(tournamentId);
+    const input = req.body?.settings || req.body || {};
+    const next = {
+      broadcastThemeEnabled: toBoolean(
+        input.broadcastThemeEnabled ?? input.broadcast_theme_enabled,
+        current.broadcastThemeEnabled,
+      ),
+      championRushEnabled: toBoolean(
+        input.championRushEnabled ?? input.champion_rush_enabled,
+        current.championRushEnabled,
+      ),
+      showCountryFlags: toBoolean(
+        input.showCountryFlags ?? input.show_country_flags,
+        current.showCountryFlags,
+      ),
+      showLiveStandingsPoints: toBoolean(
+        input.showLiveStandingsPoints ?? input.show_live_standings_points,
+        current.showLiveStandingsPoints,
+      ),
+    };
+
+    const result = await pool.query(
+      `
+      INSERT INTO tournament_settings (
+        tournament_id,
+        broadcast_theme_enabled,
+        champion_rush_enabled,
+        show_country_flags,
+        show_live_standings_points,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, NOW())
+      ON CONFLICT (tournament_id) DO UPDATE
+      SET broadcast_theme_enabled = EXCLUDED.broadcast_theme_enabled,
+          champion_rush_enabled = EXCLUDED.champion_rush_enabled,
+          show_country_flags = EXCLUDED.show_country_flags,
+          show_live_standings_points = EXCLUDED.show_live_standings_points,
+          updated_at = NOW()
+      RETURNING
+        broadcast_theme_enabled,
+        champion_rush_enabled,
+        show_country_flags,
+        show_live_standings_points
+      `,
+      [
+        tournamentId,
+        next.broadcastThemeEnabled,
+        next.championRushEnabled,
+        next.showCountryFlags,
+        next.showLiveStandingsPoints,
+      ],
+    );
+    const row = result.rows[0] || {};
+
+    return res.json({
+      success: true,
+      settings: {
+        broadcastThemeEnabled: Boolean(row.broadcast_theme_enabled),
+        championRushEnabled: Boolean(row.champion_rush_enabled),
+        showCountryFlags: Boolean(row.show_country_flags),
+        showLiveStandingsPoints: Boolean(row.show_live_standings_points),
+      },
+    });
+  } catch (err) {
+    console.error("Broadcast display settings update failed:", err.message);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
