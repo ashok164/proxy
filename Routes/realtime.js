@@ -605,16 +605,12 @@ const buildOverallLeaderboard = async (
     };
   }
 
-  const teamIds = new Set(
-    options.overallRankingEnabled
-      ? [...Object.keys(historicalIndex), ...Object.keys(liveIndex)]
-      : [
-          ...Object.keys(liveIndex),
-          ...Object.entries(historicalIndex)
-            .filter(([, team]) => team.isPlaying)
-            .map(([teamId]) => teamId),
-        ],
-  );
+  const teamIds = new Set([
+    ...Object.keys(liveIndex),
+    ...Object.entries(historicalIndex)
+      .filter(([, team]) => team.isPlaying)
+      .map(([teamId]) => teamId),
+  ]);
 
   const rows = [...teamIds].map((teamId) => {
     const historical = historicalIndex[teamId] || {
