@@ -1,0 +1,35 @@
+◇ injected env (11) from .env.local // tip: ◈ encrypted .env [www.dotenvx.com]
+📦 ENV FILE: .env.local
+⚙️ MODE: development
+◇ injected env (11) from .env.local // tip: ⌘ enable debugging { debug: true }
+DB CONFIG: {
+  envFile: '../.env.local',
+  host: 'localhost',
+  port: 5432,
+  user: 'postgres',
+  database: 'postgres',
+  passwordSet: true
+}
+📁 Uploads exposed at /uploads
+🚀 Server running on 3000
+✅ DB initialized
+🚀 Client joined WebSocket pool for Match ID: 1865398120330647552
+🌀 [ENGINE START] Initializing centralized data worker loop for Match ID: 1865398120330647552
+🚀 Client joined WebSocket pool for Match ID: 1865398120330647552
+🚀 Client joined WebSocket pool for Match ID: 1865398120330647552
+🚀 Client joined WebSocket pool for Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🚀 Client joined WebSocket pool for Match ID: 1865398120330647552
+🚀 Client joined WebSocket pool for Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+🔌 Client disconnected from Match ID: 1865398120330647552
+💤 [ENGINE SLEEP] Suspending central worker loop for inactive Match ID: 1865398120330647552
