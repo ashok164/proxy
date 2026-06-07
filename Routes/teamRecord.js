@@ -516,7 +516,7 @@ router.get("/todays-playing", async (req, res) => {
     await ensureTeamTableScope();
 
     const sql = [
-      "SELECT id, team_id, permanent_team_id, team_name, short_tag, team_logo",
+      "SELECT id, team_id, permanent_team_id, team_name, short_tag, team_logo, country_logo",
       "FROM teams",
       "WHERE tournament_id = $1 AND is_playing = true",
       "ORDER BY",
@@ -528,6 +528,7 @@ router.get("/todays-playing", async (req, res) => {
 
     const data = result.rows.map((row) => {
       const logo = formatImageUrl(baseUrl, row.team_logo) || "";
+      const countryLogo = formatImageUrl(baseUrl, row.country_logo) || "";
       return {
         id: row.id,
         teamId: row.team_id,
@@ -536,6 +537,7 @@ router.get("/todays-playing", async (req, res) => {
         tag: row.short_tag || "",
         logo,
         teamLogo: logo,
+        countryLogo,
       };
     });
 
