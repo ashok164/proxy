@@ -239,6 +239,20 @@ const compactPlayer = (player) => ({
   ),
   st: player.player_state === 2 || player.isKnocked ? 1 : player.status === "dead" || player.hp <= 0 ? 2 : 0, // 0=alive, 1=knocked, 2=dead
   pic: firstValue(player.player_image, player.player_pic, player.playerPic, ""),
+  cam: firstValue(player.camera_link, player.cameraLink, ""),
+  k: toNumber(firstValue(player.kills, player.kill, player.kill_count, player.killCount, 0)),
+  dmg: toNumber(firstValue(player.damage, player.damage_dealt, player.damageDealt, 0)),
+  as: toNumber(firstValue(player.assists, player.assist, player.assist_count, player.assistCount, 0)),
+  kd: toNumber(firstValue(player.knockdowns, player.knock_downs, player.knockDowns, player.knocks, 0)),
+  sv: toNumber(firstValue(player.survival_time, player.survivalTime, player.survival, 0)),
+  ch: firstValue(player.character, player.characterInfo, null),
+  acts: firstValue(player.active_skill, player.activeSkill, null),
+  ps: firstValue(player.passive_skills, player.passiveSkills, []),
+  wu: firstValue(player.weapon_used, player.weaponUsed, player.weapon, null),
+  wp: firstValue(player.weapon, player.weapon_used, player.weaponUsed, null),
+  ws: firstValue(player.weapon_usages, player.weaponUsages, player.weapons, []),
+  pet: firstValue(player.pet, player.petSkill, player.pet_skill, null),
+  eq: firstValue(player.equipment_loadouts, player.equipmentLoadouts, player.loadouts, []),
 });
 
 // ⚡ OPTIMIZED: Compact Team Representation
