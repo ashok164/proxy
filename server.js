@@ -95,7 +95,7 @@ app.get("/version", (req, res) => {
   res.json({
     success: true,
     service: "Tournament-Realtime-Data-Streamer",
-    version: "Version: New Change Optimizes | V2",
+    version: "Version: New Change Optimizes | V2.01",
     environment: process.env.NODE_ENV,
     timestamp: new Date().toISOString(),
   });
