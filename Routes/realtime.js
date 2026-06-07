@@ -454,6 +454,8 @@ const ensureTournamentSettingsTable = async () => {
       champion_rush_enabled BOOLEAN NOT NULL DEFAULT false,
       show_country_flags BOOLEAN NOT NULL DEFAULT false,
       show_live_standings_points BOOLEAN NOT NULL DEFAULT false,
+      show_roster_team_logos BOOLEAN NOT NULL DEFAULT true,
+      roster_page_switch BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
@@ -477,6 +479,14 @@ const ensureTournamentSettingsTable = async () => {
   await pool.query(`
     ALTER TABLE tournament_settings
     ADD COLUMN IF NOT EXISTS show_live_standings_points BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS show_roster_team_logos BOOLEAN NOT NULL DEFAULT true
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS roster_page_switch BOOLEAN NOT NULL DEFAULT false
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tournament_settings_tournament_unique
@@ -507,7 +517,9 @@ const getTournamentSettings = async (tournamentId = null) => {
       broadcast_theme_enabled,
       champion_rush_enabled,
       show_country_flags,
-      show_live_standings_points
+      show_live_standings_points,
+      show_roster_team_logos,
+      roster_page_switch
     `,
     [tournamentId],
   );
@@ -521,6 +533,8 @@ const getTournamentSettings = async (tournamentId = null) => {
     championRushEnabled: Boolean(row.champion_rush_enabled),
     showCountryFlags: Boolean(row.show_country_flags),
     showLiveStandingsPoints: Boolean(row.show_live_standings_points),
+    showRosterTeamLogos: row.show_roster_team_logos !== false,
+    rosterPageSwitch: Boolean(row.roster_page_switch),
   };
 };
 
@@ -1730,6 +1744,8 @@ router.get(broadcastDisplaySettingsRoutes, async (req, res) => {
         championRushEnabled: settings.championRushEnabled,
         showCountryFlags: settings.showCountryFlags,
         showLiveStandingsPoints: settings.showLiveStandingsPoints,
+        showRosterTeamLogos: settings.showRosterTeamLogos,
+        rosterPageSwitch: settings.rosterPageSwitch,
       },
     });
   } catch (err) {
@@ -1762,6 +1778,14 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         input.showLiveStandingsPoints ?? input.show_live_standings_points,
         current.showLiveStandingsPoints,
       ),
+      showRosterTeamLogos: toBoolean(
+        input.showRosterTeamLogos ?? input.show_roster_team_logos,
+        current.showRosterTeamLogos,
+      ),
+      rosterPageSwitch: toBoolean(
+        input.rosterPageSwitch ?? input.roster_page_switch,
+        current.rosterPageSwitch,
+      ),
     };
 
     const result = await pool.query(
@@ -1772,20 +1796,26 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         champion_rush_enabled,
         show_country_flags,
         show_live_standings_points,
+        show_roster_team_logos,
+        roster_page_switch,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
       ON CONFLICT (tournament_id) DO UPDATE
       SET broadcast_theme_enabled = EXCLUDED.broadcast_theme_enabled,
           champion_rush_enabled = EXCLUDED.champion_rush_enabled,
           show_country_flags = EXCLUDED.show_country_flags,
           show_live_standings_points = EXCLUDED.show_live_standings_points,
+          show_roster_team_logos = EXCLUDED.show_roster_team_logos,
+          roster_page_switch = EXCLUDED.roster_page_switch,
           updated_at = NOW()
       RETURNING
         broadcast_theme_enabled,
         champion_rush_enabled,
         show_country_flags,
-        show_live_standings_points
+        show_live_standings_points,
+        show_roster_team_logos,
+        roster_page_switch
       `,
       [
         tournamentId,
@@ -1793,6 +1823,8 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         next.championRushEnabled,
         next.showCountryFlags,
         next.showLiveStandingsPoints,
+        next.showRosterTeamLogos,
+        next.rosterPageSwitch,
       ],
     );
     const row = result.rows[0] || {};
@@ -1804,6 +1836,8 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         championRushEnabled: Boolean(row.champion_rush_enabled),
         showCountryFlags: Boolean(row.show_country_flags),
         showLiveStandingsPoints: Boolean(row.show_live_standings_points),
+        showRosterTeamLogos: row.show_roster_team_logos !== false,
+        rosterPageSwitch: Boolean(row.roster_page_switch),
       },
     });
   } catch (err) {

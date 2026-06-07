@@ -17,6 +17,7 @@ const COLOR_FIELDS = [
   "surfaceAlt",
   "textPrimary",
   "textSecondary",
+  "textInverse",
   "border",
   "success",
   "warning",
@@ -37,6 +38,7 @@ const ensureThemeTable = async () => {
       surface_alt_color TEXT,
       text_primary_color TEXT,
       text_secondary_color TEXT,
+      text_inverse_color TEXT,
       border_color TEXT,
       success_color TEXT,
       warning_color TEXT,
@@ -46,6 +48,10 @@ const ensureThemeTable = async () => {
     )
   `);
   await ensureTournamentColumn(pool, "theme_colors");
+  await pool.query(`
+    ALTER TABLE theme_colors
+    ADD COLUMN IF NOT EXISTS text_inverse_color TEXT
+  `);
   await pool.query("ALTER TABLE theme_colors DROP CONSTRAINT IF EXISTS theme_colors_single_row");
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_theme_colors_tournament_unique
@@ -61,6 +67,7 @@ const ensureThemeTable = async () => {
     "surface_alt_color",
     "text_primary_color",
     "text_secondary_color",
+    "text_inverse_color",
     "border_color",
     "success_color",
     "warning_color",
@@ -91,6 +98,7 @@ const formatTheme = (row = {}) => ({
   surfaceAlt: row.surface_alt_color || null,
   textPrimary: row.text_primary_color || null,
   textSecondary: row.text_secondary_color || null,
+  textInverse: row.text_inverse_color || null,
   border: row.border_color || null,
   success: row.success_color || null,
   warning: row.warning_color || null,
@@ -164,13 +172,14 @@ const saveThemeColors = async (req, res) => {
         surface_alt_color,
         text_primary_color,
         text_secondary_color,
+        text_inverse_color,
         border_color,
         success_color,
         warning_color,
         danger_color,
         updated_at
       )
-      VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+      VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
       ON CONFLICT (tournament_id) DO UPDATE
       SET
         use_default_colors = EXCLUDED.use_default_colors,
@@ -182,6 +191,7 @@ const saveThemeColors = async (req, res) => {
         surface_alt_color = EXCLUDED.surface_alt_color,
         text_primary_color = EXCLUDED.text_primary_color,
         text_secondary_color = EXCLUDED.text_secondary_color,
+        text_inverse_color = EXCLUDED.text_inverse_color,
         border_color = EXCLUDED.border_color,
         success_color = EXCLUDED.success_color,
         warning_color = EXCLUDED.warning_color,
@@ -200,6 +210,7 @@ const saveThemeColors = async (req, res) => {
         theme.surfaceAlt,
         theme.textPrimary,
         theme.textSecondary,
+        theme.textInverse,
         theme.border,
         theme.success,
         theme.warning,

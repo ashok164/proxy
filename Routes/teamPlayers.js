@@ -380,6 +380,98 @@ router.get("/view-team-player", async (req, res) => {
 });
 
 /* =========================================================
+   GET BROADCAST TEAM ROSTER
+   Frontend endpoint: GET /:tournamentSlug/api/broadcast/team-roster
+========================================================= */
+router.get(
+  [
+    "/api/broadcast/team-roster",
+    "/:tournamentSlug/api/broadcast/team-roster",
+  ],
+  async (req, res) => {
+    try {
+      const baseUrl = getBaseUrl(req);
+      await ensurePlayerColumns();
+      const tournamentId = await getTournamentIdFromRequest(pool, req);
+      const onlyPlaying =
+        String(req.query.onlyPlaying || req.query.only_playing || "").toLowerCase() ===
+        "true";
+
+      const result = await pool.query(
+        `
+        SELECT
+          tp.*,
+          t.id AS team_row_id,
+          t.team_name,
+          t.short_tag,
+          t.team_logo,
+          t.country_logo,
+          t.rank,
+          t.is_playing
+        FROM team_players tp
+        LEFT JOIN teams t
+          ON t.team_id = tp.team_id AND t.tournament_id = tp.tournament_id
+        WHERE tp.tournament_id = $1
+          AND ($2::boolean = false OR COALESCE(t.is_playing, false) = true)
+        ORDER BY
+          CASE WHEN t.rank ~ '^[0-9]+$' THEN t.rank::BIGINT END ASC NULLS LAST,
+          tp.team_id ASC,
+          tp.id ASC
+        `,
+        [tournamentId, onlyPlaying],
+      );
+
+      const teams = new Map();
+
+      result.rows.forEach((row) => {
+        const teamKey = String(row.team_id || row.team_row_id || "unknown");
+        const existing = teams.get(teamKey);
+        const teamPayload =
+          existing ||
+          {
+            id: row.team_row_id || row.team_id,
+            teamId: row.team_id,
+            teamName: row.team_name || "Unnamed Team",
+            shortTag: row.short_tag || "",
+            tag: row.short_tag || "",
+            teamLogo: formatImageUrl(baseUrl, row.team_logo),
+            countryLogo: formatImageUrl(baseUrl, row.country_logo),
+            rank: row.rank,
+            isPlaying: Boolean(row.is_playing),
+            players: [],
+          };
+
+        teamPayload.players.push({
+          id: row.id,
+          uid: row.player_uid,
+          playerUid: row.player_uid,
+          name: row.player_name || `Player ${teamPayload.players.length + 1}`,
+          playerName: row.player_name || `Player ${teamPayload.players.length + 1}`,
+          playerPic: formatImageUrl(baseUrl, row.player_pic),
+          cameraLink: row.camera_link,
+          countryLogo: formatImageUrl(baseUrl, row.country_logo),
+        });
+
+        teams.set(teamKey, teamPayload);
+      });
+
+      return res.json({
+        success: true,
+        tournamentId,
+        onlyPlaying,
+        teams: Array.from(teams.values()),
+      });
+    } catch (err) {
+      console.error("Broadcast team roster fetch failed:", err);
+      return res.status(err.statusCode || 500).json({
+        success: false,
+        message: err.message,
+      });
+    }
+  },
+);
+
+/* =========================================================
    GET SINGLE PLAYER BY PLAYER UID
    Frontend endpoint: GET /api/team-players/by-player-uid/:playerUid
 ========================================================= */

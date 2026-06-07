@@ -110,6 +110,7 @@ const initDB = async () => {
         surface_alt_color TEXT,
         text_primary_color TEXT,
         text_secondary_color TEXT,
+        text_inverse_color TEXT,
         border_color TEXT,
         success_color TEXT,
         warning_color TEXT,
@@ -360,6 +361,11 @@ const initDB = async () => {
     }
 
     await pool.query(`
+      ALTER TABLE theme_colors
+      ADD COLUMN IF NOT EXISTS text_inverse_color TEXT;
+    `);
+
+    await pool.query(`
       INSERT INTO theme_colors (id)
       VALUES (1)
       ON CONFLICT (id) DO NOTHING;
@@ -386,6 +392,7 @@ const initDB = async () => {
       "surface_alt_color",
       "text_primary_color",
       "text_secondary_color",
+      "text_inverse_color",
       "border_color",
       "success_color",
       "warning_color",
