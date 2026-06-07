@@ -442,7 +442,7 @@ router.post(
         const result = await pool.query(
           `
           INSERT INTO teams (tournament_id, team_id, permanent_team_id, team_name, short_tag, team_logo, country_logo, is_playing)
-          VALUES ($1, $2, $2, $3, $4, $5, $6, $7)
+          VALUES ($1, $2, $8, $3, $4, $5, $6, $7)
           ON CONFLICT (tournament_id, team_id) DO UPDATE 
           SET 
             team_name = EXCLUDED.team_name,
@@ -453,7 +453,7 @@ router.post(
             updated_at = NOW()
           RETURNING *
           `,
-          [tournamentId, teamId, teamName, shortTag, teamLogo, countryLogo, isPlaying],
+          [tournamentId, teamId, teamName, shortTag, teamLogo, countryLogo, isPlaying, teamId],
         );
 
         const row = result.rows[0];
