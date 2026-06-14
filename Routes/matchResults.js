@@ -979,6 +979,97 @@ const queryMatchResults = async (matchIds, tournamentId) => {
   };
 };
 
+const loadResultMatchInventory = async (tournamentId) => {
+  await ensureMatchResultsTable();
+
+  const [savedMatchesResult, gameDetailsResult] = await Promise.all([
+    pool.query(
+      `
+      SELECT
+        mr.match_id,
+        COUNT(*) AS result_row_count,
+        COALESCE(SUM(mr.total_kills), 0) AS total_score,
+        MAX(mr.updated_at) AS last_updated,
+        COUNT(DISTINCT mr.team_id) AS team_count,
+        COUNT(DISTINCT mrp.id) AS player_row_count
+      FROM match_results mr
+      LEFT JOIN match_result_players mrp
+        ON mrp.match_result_id = mr.id
+      WHERE mr.tournament_id = $1
+      GROUP BY mr.match_id
+      ORDER BY MAX(mr.updated_at) DESC, mr.match_id ASC
+      `,
+      [tournamentId],
+    ),
+    pool.query(
+      `
+      SELECT
+        id,
+        match_id,
+        game_number,
+        round_name,
+        phase,
+        enabled,
+        details
+      FROM game_details
+      WHERE tournament_id = $1
+        AND match_id IS NOT NULL
+        AND TRIM(match_id) <> ''
+      ORDER BY id ASC
+      `,
+      [tournamentId],
+    ),
+  ]);
+
+  const gameDetailsByMatchId = {};
+
+  for (const row of gameDetailsResult.rows) {
+    const matchId = toNullableString(row.match_id);
+    if (!matchId) continue;
+
+    gameDetailsByMatchId[matchId] = {
+      gameDetailId: row.id,
+      matchId,
+      gameNumber: row.game_number || "",
+      roundName: row.round_name || "",
+      phase: row.phase || "",
+      enabled: Boolean(row.enabled),
+      resultEnabled: Boolean(
+        row.details?.resultEnabled ?? row.details?.result_enabled ?? false,
+      ),
+      todaysResultEnabled: Boolean(
+        row.details?.todaysResultEnabled ?? row.details?.todays_result_enabled ?? false,
+      ),
+      leagueStageResultEnabled: Boolean(
+        row.details?.leagueStageResultEnabled ?? row.details?.league_stage_result_enabled ?? false,
+      ),
+    };
+  }
+
+  const resultMatches = savedMatchesResult.rows.map((row) => {
+    const matchId = toNullableString(row.match_id) || "";
+    const gameDetail = gameDetailsByMatchId[matchId] || null;
+
+    return {
+      matchId,
+      resultRowCount: Number(row.result_row_count || 0),
+      playerRowCount: Number(row.player_row_count || 0),
+      totalScore: Number(row.total_score || 0),
+      teamCount: Number(row.team_count || 0),
+      lastUpdated: row.last_updated,
+      hasGameDetail: Boolean(gameDetail),
+      stale: !gameDetail,
+      gameDetail,
+    };
+  });
+
+  return {
+    matches: resultMatches,
+    staleMatches: resultMatches.filter((match) => match.stale),
+    gameDetails: Object.values(gameDetailsByMatchId),
+  };
+};
+
 router.post("/create", async (req, res) => {
     try {
     await ensureMatchResultsTable();
@@ -1618,7 +1709,27 @@ router.post("/by-match-ids", async (req, res) => {
   }
 });
 
+router.get("/inventory/all", async (req, res) => {
+  try {
+    const tournamentId = await getTournamentIdFromRequest(pool, req);
+    const inventory = await loadResultMatchInventory(tournamentId);
+
+    return res.json({
+      success: true,
+      tournamentId,
+      data: inventory.matches,
+      staleMatches: inventory.staleMatches,
+      gameDetails: inventory.gameDetails,
+    });
+  } catch (err) {
+    console.error("Result inventory fetch failed:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.delete("/:matchId", async (req, res) => {
+  let client;
+
   try {
     await ensureMatchResultsTable();
     const tournamentId = await getTournamentIdFromRequest(pool, req);
@@ -1631,21 +1742,34 @@ router.delete("/:matchId", async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    const playerResult = await client.query(
+      "DELETE FROM match_result_players WHERE match_id = $1 AND tournament_id = $2 RETURNING id",
+      [matchId, tournamentId],
+    );
+    const result = await client.query(
       "DELETE FROM match_results WHERE match_id = $1 AND tournament_id = $2 RETURNING id, match_id, team_id",
       [matchId, tournamentId],
     );
+
+    await client.query("COMMIT");
 
     return res.json({
       success: true,
       message: "Match result deleted successfully",
       matchId,
       deletedCount: result.rowCount,
+      deletedPlayerCount: playerResult.rowCount,
       deletedRows: result.rows,
     });
   } catch (err) {
+    if (client) await client.query("ROLLBACK").catch(() => {});
     console.error("Match result delete failed:", err);
     return res.status(500).json({ success: false, message: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 

@@ -196,6 +196,7 @@ const ensureCountryLogoTable = async () => {
       updated_at TIMESTAMP DEFAULT NOW()
     )
   `);
+  
   await ensureTournamentColumn(pool, "country_logos");
   await pool.query("ALTER TABLE country_logos DROP CONSTRAINT IF EXISTS country_logos_image_path_key");
   await pool.query(`
