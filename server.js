@@ -3,6 +3,7 @@ const cors = require("cors");
 const http = require("http");
 const path = require("path");
 const dotenv = require("dotenv");
+const { Server } = require("socket.io");
 
 /* ================= ENV ================= */
 const NODE_ENV = process.env.NODE_ENV || "development";
@@ -24,6 +25,14 @@ if (!process.env.DB_PASSWORD) {
 /* ================= APP ================= */
 const app = express();
 const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: true,
+    credentials: true,
+  },
+});
+const spectatorNamespace = io.of("/spectator-camera");
+app.set("spectatorNamespace", spectatorNamespace);
 
 /* ================= DB ================= */
 const initDB = require("./Database/initDB");
@@ -73,6 +82,29 @@ const zoneShrinkRoutes = require("./Routes/zoneShrink");
 const matchStatsRoutes = require("./Routes/matchStats");
 const matchResultRoutes = require("./Routes/matchResults");
 const googleSheetsRoutes = require("./Routes/googleSheets");
+const spectatorRoutes = require("./Routes/spectator");
+
+spectatorNamespace.on("connection", (socket) => {
+  socket.on("spectator:join", ({ spectId, tournamentId }) => {
+    const normalizedSpectId = String(spectId || "").trim();
+    const normalizedTournamentId = String(tournamentId || "").trim();
+
+    if (!normalizedSpectId || !normalizedTournamentId) {
+      socket.emit("spectator:error", {
+        message: "spectId and tournamentId are required",
+      });
+      return;
+    }
+
+    const roomName = spectatorRoutes.toRoomName(normalizedTournamentId, normalizedSpectId);
+    socket.join(roomName);
+    socket.emit("spectator:joined", {
+      spectId: normalizedSpectId,
+      tournamentId: normalizedTournamentId,
+      room: roomName,
+    });
+  });
+});
 
 app.use("/", realtimeRoutes);
 app.use("/", logoRoutes);
@@ -88,6 +120,7 @@ app.use("/api/zone-shrink", zoneShrinkRoutes);
 app.use("/api/match_stats", matchStatsRoutes);
 app.use("/api/results", matchResultRoutes);
 app.use("/api/results", googleSheetsRoutes);
+app.use("/api", spectatorRoutes.router);
 app.use("/api", gameAssetRoutes);
 
 /* ================= VERSION ================= */
@@ -113,6 +146,7 @@ server.on("upgrade", async (req, socket) => {
       req.headers.upgrade && req.headers.upgrade.toLowerCase() === "websocket";
 
     if (!isWebSocket) return;
+    if (String(req.url || "").startsWith("/socket.io/")) return;
 
     const handled = await realtimeRoutes?.handleRealtimeWebSocket?.(req, socket);
 
