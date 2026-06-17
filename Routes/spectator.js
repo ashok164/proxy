@@ -55,39 +55,6 @@ const fetchGarenaMatch = async (matchId) => {
   return response.data;
 };
 
-const getPlayerByUid = async (tournamentId, playerUid) => {
-  const result = await pool.query(
-    `
-    SELECT
-      tp.player_uid,
-      tp.player_name,
-      tp.camera_link,
-      tp.player_pic,
-      t.team_name
-    FROM team_players tp
-    LEFT JOIN teams t
-      ON t.team_id = tp.team_id AND t.tournament_id = tp.tournament_id
-    WHERE tp.player_uid = $1 AND tp.tournament_id = $2
-    LIMIT 1
-    `,
-    [String(playerUid), tournamentId],
-  );
-
-  if (!result.rows.length) {
-    return null;
-  }
-
-  const row = result.rows[0];
-
-  return {
-    uid: String(row.player_uid),
-    name: row.player_name || "Unknown Player",
-    camUrl: row.camera_link || "",
-    playerPic: row.player_pic || null,
-    teamName: row.team_name || "",
-  };
-};
-
 const listPlayers = async (tournamentId) => {
   const result = await pool.query(
     `
@@ -156,7 +123,7 @@ const findSpectatorObservation = async (spectatorId, matchIds) => {
   return null;
 };
 
-const buildSpectatorPayloadForMatch = async (tournamentId, spectId, matchId) => {
+const buildSpectatorPayloadForMatch = async (_tournamentId, spectId, matchId) => {
   const observation = await findSpectatorObservation(spectId, [String(matchId)]);
   if (!observation) {
     const error = new Error("spectatorId was not found in Garena match data");
@@ -164,17 +131,12 @@ const buildSpectatorPayloadForMatch = async (tournamentId, spectId, matchId) => 
     throw error;
   }
 
-  const dbPlayer = observation.observingPlayerUid
-    ? await getPlayerByUid(tournamentId, observation.observingPlayerUid)
-    : null;
-
   return {
     spectatorId: String(spectId),
     matchId: observation.matchId,
-    playerId: observation.observingPlayerUid || "",
-    name: dbPlayer?.name || observation.observingPlayerName || "Unknown Player",
-    camera: dbPlayer?.camUrl || "",
-    teamName: dbPlayer?.teamName || observation.observingTeamName || "",
+    observerId: observation.observingPlayerUid || "",
+    observerName: observation.observingPlayerName || "",
+    observerTeamName: observation.observingTeamName || "",
   };
 };
 
