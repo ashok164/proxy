@@ -35,6 +35,9 @@ const normalizeSpectIds = (spectIds = []) =>
 const toRoomName = (tournamentId, spectId) =>
   `spect_${String(tournamentId)}_${String(spectId)}`;
 
+const toCameraRoomName = (tournamentId, matchId, spectId) =>
+  `camera_${String(tournamentId)}_${String(matchId)}_${String(spectId)}`;
+
 const getSpectatorNamespace = (req) => req.app.get("spectatorNamespace");
 
 const fetchGarenaMatch = async (matchId) => {
@@ -52,8 +55,7 @@ const fetchGarenaMatch = async (matchId) => {
   return response.data;
 };
 
-const getPlayerByUid = async (req, tournamentId, playerUid) => {
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
+const getPlayerByUid = async (tournamentId, playerUid) => {
   const result = await pool.query(
     `
     SELECT
@@ -81,9 +83,7 @@ const getPlayerByUid = async (req, tournamentId, playerUid) => {
     uid: String(row.player_uid),
     name: row.player_name || "Unknown Player",
     camUrl: row.camera_link || "",
-    playerPic: row.player_pic
-      ? `${baseUrl}/uploads/${String(row.player_pic).replace(/^\/?uploads\//i, "")}`
-      : null,
+    playerPic: row.player_pic || null,
     teamName: row.team_name || "",
   };
 };
@@ -156,7 +156,29 @@ const findSpectatorObservation = async (spectatorId, matchIds) => {
   return null;
 };
 
-const buildSpectatorPayload = async (req, tournamentId, spectId) => {
+const buildSpectatorPayloadForMatch = async (tournamentId, spectId, matchId) => {
+  const observation = await findSpectatorObservation(spectId, [String(matchId)]);
+  if (!observation) {
+    const error = new Error("spectatorId was not found in Garena match data");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const dbPlayer = observation.observingPlayerUid
+    ? await getPlayerByUid(tournamentId, observation.observingPlayerUid)
+    : null;
+
+  return {
+    spectatorId: String(spectId),
+    matchId: observation.matchId,
+    playerId: observation.observingPlayerUid || "",
+    name: dbPlayer?.name || observation.observingPlayerName || "Unknown Player",
+    camera: dbPlayer?.camUrl || "",
+    teamName: dbPlayer?.teamName || observation.observingTeamName || "",
+  };
+};
+
+const buildSpectatorPayload = async (tournamentId, spectId) => {
   const groups = Array.from(getTournamentBucket(groupsByTournament, tournamentId).values());
   const group = groups.find((entry) => entry.spectIds.includes(String(spectId)));
 
@@ -180,17 +202,7 @@ const buildSpectatorPayload = async (req, tournamentId, spectId) => {
     throw error;
   }
 
-  const dbPlayer = observation.observingPlayerUid
-    ? await getPlayerByUid(req, tournamentId, observation.observingPlayerUid)
-    : null;
-
-  return {
-    spectatorId: String(spectId),
-    matchId: observation.matchId,
-    playerId: observation.observingPlayerUid || "",
-    name: dbPlayer?.name || observation.observingPlayerName || "Unknown Player",
-    camera: dbPlayer?.camUrl || "",
-  };
+  return buildSpectatorPayloadForMatch(tournamentId, spectId, observation.matchId);
 };
 
 const ensureTournamentEngine = (req, tournamentId) => {
@@ -211,7 +223,7 @@ const ensureTournamentEngine = (req, tournamentId) => {
     for (const group of groups) {
       for (const spectId of group.spectIds) {
         try {
-          const payload = await buildSpectatorPayload(req, tournamentId, spectId);
+          const payload = await buildSpectatorPayload(tournamentId, spectId);
           const previous = latestBucket.get(spectId);
           const changed =
             !previous ||
@@ -375,7 +387,7 @@ router.get("/spectator/resolve/:spectId", async (req, res) => {
   try {
     const tournamentId = await getTournamentIdFromRequest(pool, req);
     const spectId = String(req.params.spectId || "").trim();
-    const payload = await buildSpectatorPayload(req, tournamentId, spectId);
+    const payload = await buildSpectatorPayload(tournamentId, spectId);
 
     getTournamentBucket(latestByTournament, tournamentId).set(spectId, payload);
 
@@ -411,4 +423,6 @@ router.get("/spectator/:spectId", async (req, res) => {
 module.exports = {
   router,
   toRoomName,
+  toCameraRoomName,
+  buildSpectatorPayloadForMatch,
 };

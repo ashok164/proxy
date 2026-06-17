@@ -33,6 +33,7 @@ const io = new Server(server, {
 });
 const spectatorNamespace = io.of("/spectator-camera");
 app.set("spectatorNamespace", spectatorNamespace);
+const spectatorCameraWatchers = new Map();
 
 /* ================= DB ================= */
 const initDB = require("./Database/initDB");
@@ -85,6 +86,19 @@ const googleSheetsRoutes = require("./Routes/googleSheets");
 const spectatorRoutes = require("./Routes/spectator");
 
 spectatorNamespace.on("connection", (socket) => {
+  const watcherKeys = new Set();
+
+  const stopWatcher = (watcherKey) => {
+    const watcher = spectatorCameraWatchers.get(watcherKey);
+    if (!watcher) return;
+
+    watcher.sockets.delete(socket.id);
+    if (watcher.sockets.size === 0) {
+      clearInterval(watcher.timerId);
+      spectatorCameraWatchers.delete(watcherKey);
+    }
+  };
+
   socket.on("spectator:join", ({ spectId, tournamentId }) => {
     const normalizedSpectId = String(spectId || "").trim();
     const normalizedTournamentId = String(tournamentId || "").trim();
@@ -103,6 +117,84 @@ spectatorNamespace.on("connection", (socket) => {
       tournamentId: normalizedTournamentId,
       room: roomName,
     });
+  });
+
+  socket.on("camera:join", ({ spectId, matchId, tournamentId }) => {
+    const normalizedSpectId = String(spectId || "").trim();
+    const normalizedMatchId = String(matchId || "").trim();
+    const normalizedTournamentId = String(tournamentId || "").trim();
+
+    if (!normalizedSpectId || !normalizedMatchId || !normalizedTournamentId) {
+      socket.emit("camera:error", {
+        message: "spectId, matchId, and tournamentId are required",
+      });
+      return;
+    }
+
+    const roomName = spectatorRoutes.toCameraRoomName(
+      normalizedTournamentId,
+      normalizedMatchId,
+      normalizedSpectId,
+    );
+    const watcherKey = roomName;
+    watcherKeys.add(watcherKey);
+    socket.join(roomName);
+
+    const startWatcher = () => {
+      const existing = spectatorCameraWatchers.get(watcherKey);
+      if (existing) {
+        existing.sockets.add(socket.id);
+        return existing;
+      }
+
+      const watcher = {
+        sockets: new Set([socket.id]),
+        latestSerialized: "",
+        timerId: null,
+      };
+
+      const tick = async () => {
+        try {
+          const payload = await spectatorRoutes.buildSpectatorPayloadForMatch(
+            normalizedTournamentId,
+            normalizedSpectId,
+            normalizedMatchId,
+          );
+          const serialized = JSON.stringify(payload);
+
+          if (serialized !== watcher.latestSerialized) {
+            watcher.latestSerialized = serialized;
+            spectatorNamespace.to(roomName).emit("camera_update", payload);
+          }
+        } catch (error) {
+          if (error?.statusCode !== 404) {
+            console.error(`Camera watcher error for ${normalizedSpectId}/${normalizedMatchId}:`, error.message);
+          }
+        }
+      };
+
+      watcher.timerId = setInterval(tick, 3000);
+      spectatorCameraWatchers.set(watcherKey, watcher);
+      tick().catch((error) => {
+        if (error?.statusCode !== 404) {
+          console.error("Initial camera watcher tick failed:", error.message);
+        }
+      });
+
+      return watcher;
+    };
+
+    startWatcher();
+    socket.emit("camera:joined", {
+      spectId: normalizedSpectId,
+      matchId: normalizedMatchId,
+      tournamentId: normalizedTournamentId,
+      room: roomName,
+    });
+  });
+
+  socket.on("disconnect", () => {
+    watcherKeys.forEach((watcherKey) => stopWatcher(watcherKey));
   });
 });
 
