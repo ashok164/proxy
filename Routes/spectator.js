@@ -35,8 +35,8 @@ const normalizeSpectIds = (spectIds = []) =>
 const toRoomName = (tournamentId, spectId) =>
   `spect_${String(tournamentId)}_${String(spectId)}`;
 
-const toCameraRoomName = (tournamentId, matchId, spectId) =>
-  `camera_${String(tournamentId)}_${String(matchId)}_${String(spectId)}`;
+const toCameraRoomName = (tournamentId, matchId) =>
+  `camera_${String(tournamentId)}_${String(matchId)}`;
 
 const getSpectatorNamespace = (req) => req.app.get("spectatorNamespace");
 
@@ -123,20 +123,24 @@ const findSpectatorObservation = async (spectatorId, matchIds) => {
   return null;
 };
 
-const buildSpectatorPayloadForMatch = async (_tournamentId, spectId, matchId) => {
-  const observation = await findSpectatorObservation(spectId, [String(matchId)]);
-  if (!observation) {
-    const error = new Error("spectatorId was not found in Garena match data");
-    error.statusCode = 404;
-    throw error;
+const buildSpectatorFeedForMatch = async (_tournamentId, matchId) => {
+  const rawMatch = await fetchGarenaMatch(String(matchId));
+  const spectorInfo = rawMatch?.match?.match_stats_extra?.spector_info;
+  if (!Array.isArray(spectorInfo)) {
+    return {
+      matchId: String(matchId),
+      spectators: [],
+    };
   }
 
   return {
-    spectatorId: String(spectId),
-    matchId: observation.matchId,
-    observerId: observation.observingPlayerUid || "",
-    observerName: observation.observingPlayerName || "",
-    observerTeamName: observation.observingTeamName || "",
+    matchId: String(matchId),
+    spectators: spectorInfo.map((entry) => ({
+      spectatorId: String(entry?.spector_id || "").trim(),
+      observerId: String(entry?.observer_id || "").trim(),
+      observerName: String(entry?.observer_name || "").trim(),
+      observerTeamName: String(entry?.observer_team_name || "").trim(),
+    })),
   };
 };
 
@@ -386,5 +390,5 @@ module.exports = {
   router,
   toRoomName,
   toCameraRoomName,
-  buildSpectatorPayloadForMatch,
+  buildSpectatorFeedForMatch,
 };

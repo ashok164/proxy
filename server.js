@@ -119,14 +119,13 @@ spectatorNamespace.on("connection", (socket) => {
     });
   });
 
-  socket.on("camera:join", ({ spectId, matchId, tournamentId }) => {
-    const normalizedSpectId = String(spectId || "").trim();
+  socket.on("camera:join", ({ matchId, tournamentId }) => {
     const normalizedMatchId = String(matchId || "").trim();
     const normalizedTournamentId = String(tournamentId || "").trim();
 
-    if (!normalizedSpectId || !normalizedMatchId || !normalizedTournamentId) {
+    if (!normalizedMatchId || !normalizedTournamentId) {
       socket.emit("camera:error", {
-        message: "spectId, matchId, and tournamentId are required",
+        message: "matchId and tournamentId are required",
       });
       return;
     }
@@ -134,7 +133,6 @@ spectatorNamespace.on("connection", (socket) => {
     const roomName = spectatorRoutes.toCameraRoomName(
       normalizedTournamentId,
       normalizedMatchId,
-      normalizedSpectId,
     );
     const watcherKey = roomName;
     watcherKeys.add(watcherKey);
@@ -155,9 +153,8 @@ spectatorNamespace.on("connection", (socket) => {
 
       const tick = async () => {
         try {
-          const payload = await spectatorRoutes.buildSpectatorPayloadForMatch(
+          const payload = await spectatorRoutes.buildSpectatorFeedForMatch(
             normalizedTournamentId,
-            normalizedSpectId,
             normalizedMatchId,
           );
           const serialized = JSON.stringify(payload);
@@ -168,7 +165,7 @@ spectatorNamespace.on("connection", (socket) => {
           }
         } catch (error) {
           if (error?.statusCode !== 404) {
-            console.error(`Camera watcher error for ${normalizedSpectId}/${normalizedMatchId}:`, error.message);
+            console.error(`Camera watcher error for match ${normalizedMatchId}:`, error.message);
           }
         }
       };
@@ -186,7 +183,6 @@ spectatorNamespace.on("connection", (socket) => {
 
     startWatcher();
     socket.emit("camera:joined", {
-      spectId: normalizedSpectId,
       matchId: normalizedMatchId,
       tournamentId: normalizedTournamentId,
       room: roomName,
