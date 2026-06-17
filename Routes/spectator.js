@@ -11,7 +11,6 @@ const getPushIntervalMs = () =>
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
 
-const groupsByTournament = new Map();
 const latestByTournament = new Map();
 const enginesByTournament = new Map();
 
@@ -69,6 +68,156 @@ const listPlayers = async (tournamentId) => {
     name: row.player_name || "Unknown Player",
     camUrl: row.camera_link || "",
   }));
+};
+
+const listSpectatorGroups = async (tournamentId) => {
+  const result = await pool.query(
+    `
+    SELECT
+      sg.group_id,
+      sg.tournament_id,
+      sg.created_at,
+      sg.updated_at,
+      COALESCE(
+        ARRAY_AGG(sge.spectator_id ORDER BY sge.position ASC, sge.id ASC)
+          FILTER (WHERE sge.spectator_id IS NOT NULL),
+        ARRAY[]::TEXT[]
+      ) AS spect_ids
+    FROM spectator_groups sg
+    LEFT JOIN spectator_group_entries sge
+      ON sge.spectator_group_id = sg.id
+    WHERE sg.tournament_id = $1
+    GROUP BY sg.id
+    ORDER BY sg.created_at ASC, sg.id ASC
+    `,
+    [tournamentId],
+  );
+
+  return result.rows.map((row) => ({
+    groupId: String(row.group_id || "").trim(),
+    spectIds: normalizeSpectIds(row.spect_ids || []),
+    tournamentId: row.tournament_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+};
+
+const getSpectatorGroup = async (tournamentId, groupId) => {
+  const groups = await listSpectatorGroups(tournamentId);
+  return groups.find((group) => group.groupId === String(groupId || "").trim()) || null;
+};
+
+const upsertSpectatorGroup = async (tournamentId, currentGroupId, nextGroupId, spectIds) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const existingResult = await client.query(
+      `
+      SELECT id, group_id, created_at
+      FROM spectator_groups
+      WHERE tournament_id = $1 AND group_id = $2
+      LIMIT 1
+      `,
+      [tournamentId, String(currentGroupId || "").trim()],
+    );
+
+    const existing = existingResult.rows[0] || null;
+
+    if (!existing) {
+      const insertResult = await client.query(
+        `
+        INSERT INTO spectator_groups (tournament_id, group_id, updated_at)
+        VALUES ($1, $2, NOW())
+        RETURNING id, group_id, tournament_id, created_at, updated_at
+        `,
+        [tournamentId, nextGroupId],
+      );
+
+      const created = insertResult.rows[0];
+      for (let index = 0; index < spectIds.length; index += 1) {
+        await client.query(
+          `
+          INSERT INTO spectator_group_entries (spectator_group_id, spectator_id, position, updated_at)
+          VALUES ($1, $2, $3, NOW())
+          `,
+          [created.id, spectIds[index], index],
+        );
+      }
+
+      await client.query("COMMIT");
+      return {
+        groupId: String(created.group_id || "").trim(),
+        spectIds,
+        tournamentId: created.tournament_id,
+        createdAt: created.created_at,
+        updatedAt: created.updated_at,
+      };
+    }
+
+    await client.query(
+      `
+      UPDATE spectator_groups
+      SET group_id = $1, updated_at = NOW()
+      WHERE id = $2
+      `,
+      [nextGroupId, existing.id],
+    );
+
+    await client.query(
+      `DELETE FROM spectator_group_entries WHERE spectator_group_id = $1`,
+      [existing.id],
+    );
+
+    for (let index = 0; index < spectIds.length; index += 1) {
+      await client.query(
+        `
+        INSERT INTO spectator_group_entries (spectator_group_id, spectator_id, position, updated_at)
+        VALUES ($1, $2, $3, NOW())
+        `,
+        [existing.id, spectIds[index], index],
+      );
+    }
+
+    const updatedResult = await client.query(
+      `
+      SELECT id, group_id, tournament_id, created_at, updated_at
+      FROM spectator_groups
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [existing.id],
+    );
+
+    await client.query("COMMIT");
+
+    const updated = updatedResult.rows[0];
+    return {
+      groupId: String(updated.group_id || "").trim(),
+      spectIds,
+      tournamentId: updated.tournament_id,
+      createdAt: updated.created_at,
+      updatedAt: updated.updated_at,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+const deleteSpectatorGroup = async (tournamentId, groupId) => {
+  const result = await pool.query(
+    `
+    DELETE FROM spectator_groups
+    WHERE tournament_id = $1 AND group_id = $2
+    RETURNING id
+    `,
+    [tournamentId, String(groupId || "").trim()],
+  );
+
+  return Boolean(result.rowCount);
 };
 
 const getPlayerLookup = async (tournamentId) => {
@@ -202,7 +351,7 @@ const buildLegacySpectatorPayloadForMatch = async (tournamentId, spectId, matchI
 };
 
 const buildSpectatorPayload = async (tournamentId, spectId) => {
-  const groups = Array.from(getTournamentBucket(groupsByTournament, tournamentId).values());
+  const groups = await listSpectatorGroups(tournamentId);
   const group = groups.find((entry) => entry.spectIds.includes(String(spectId)));
 
   if (!group) {
@@ -235,7 +384,7 @@ const ensureTournamentEngine = (req, tournamentId) => {
   }
 
   const tick = async () => {
-    const groups = Array.from(getTournamentBucket(groupsByTournament, tournamentId).values());
+    const groups = await listSpectatorGroups(tournamentId);
     const namespace = getSpectatorNamespace(req);
     const latestBucket = getTournamentBucket(latestByTournament, tournamentId);
 
@@ -294,7 +443,7 @@ router.get("/spectator/players", async (req, res) => {
 router.get("/spectator/groups", async (req, res) => {
   try {
     const tournamentId = await getTournamentIdFromRequest(pool, req);
-    const groups = Array.from(getTournamentBucket(groupsByTournament, tournamentId).values());
+    const groups = await listSpectatorGroups(tournamentId);
     res.json({ success: true, groups });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -315,16 +464,13 @@ router.post("/spectator/create", async (req, res) => {
       return res.status(400).json({ success: false, message: "At least one spectId is required" });
     }
 
-    const groups = getTournamentBucket(groupsByTournament, tournamentId);
     const latest = getTournamentBucket(latestByTournament, tournamentId);
-    const group = {
-      groupId,
-      spectIds,
-      tournamentId,
-      createdAt: new Date().toISOString(),
-    };
+    const existing = await getSpectatorGroup(tournamentId, groupId);
+    if (existing) {
+      return res.status(409).json({ success: false, message: "Spectator group already exists" });
+    }
 
-    groups.set(groupId, group);
+    const group = await upsertSpectatorGroup(tournamentId, groupId, groupId, spectIds);
     spectIds.forEach((spectId) => latest.set(spectId, latest.get(spectId) || null));
     ensureTournamentEngine(req, tournamentId);
 
@@ -345,9 +491,8 @@ router.put("/spectator/groups/:groupId", async (req, res) => {
     const currentGroupId = String(req.params.groupId || "").trim();
     const nextGroupId = String(req.body?.groupId || currentGroupId).trim();
     const spectIds = normalizeSpectIds(req.body?.spectIds || []);
-    const groups = getTournamentBucket(groupsByTournament, tournamentId);
     const latest = getTournamentBucket(latestByTournament, tournamentId);
-    const existing = groups.get(currentGroupId);
+    const existing = await getSpectatorGroup(tournamentId, currentGroupId);
 
     if (!existing) {
       return res.status(404).json({ success: false, message: "Spectator group not found" });
@@ -361,22 +506,18 @@ router.put("/spectator/groups/:groupId", async (req, res) => {
       return res.status(400).json({ success: false, message: "At least one spectId is required" });
     }
 
-    groups.delete(currentGroupId);
     existing.spectIds.forEach((spectId) => {
       if (!spectIds.includes(spectId)) {
         latest.delete(spectId);
       }
     });
 
-    const updatedGroup = {
-      groupId: nextGroupId,
-      spectIds,
+    const updatedGroup = await upsertSpectatorGroup(
       tournamentId,
-      createdAt: existing.createdAt,
-      updatedAt: new Date().toISOString(),
-    };
-
-    groups.set(nextGroupId, updatedGroup);
+      currentGroupId,
+      nextGroupId,
+      spectIds,
+    );
     spectIds.forEach((spectId) => latest.set(spectId, latest.get(spectId) || null));
     ensureTournamentEngine(req, tournamentId);
 
@@ -390,15 +531,14 @@ router.delete("/spectator/groups/:groupId", async (req, res) => {
   try {
     const tournamentId = await getTournamentIdFromRequest(pool, req);
     const groupId = String(req.params.groupId || "").trim();
-    const groups = getTournamentBucket(groupsByTournament, tournamentId);
     const latest = getTournamentBucket(latestByTournament, tournamentId);
-    const existing = groups.get(groupId);
+    const existing = await getSpectatorGroup(tournamentId, groupId);
 
     if (!existing) {
       return res.status(404).json({ success: false, message: "Spectator group not found" });
     }
 
-    groups.delete(groupId);
+    await deleteSpectatorGroup(tournamentId, groupId);
     existing.spectIds.forEach((spectId) => latest.delete(spectId));
 
     return res.json({ success: true, message: "Spectator group deleted.", groupId });

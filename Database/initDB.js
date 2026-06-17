@@ -290,6 +290,27 @@ const initDB = async () => {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS spectator_groups (
+        id SERIAL PRIMARY KEY,
+        tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
+        group_id TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS spectator_group_entries (
+        id SERIAL PRIMARY KEY,
+        spectator_group_id INTEGER NOT NULL REFERENCES spectator_groups(id) ON DELETE CASCADE,
+        spectator_id TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await pool.query(`
       ALTER TABLE teams
       ADD COLUMN IF NOT EXISTS is_playing BOOLEAN NOT NULL DEFAULT false;
     `);
@@ -441,6 +462,7 @@ const initDB = async () => {
       "zone_shrink_state",
       "tournament_settings",
       "game_details",
+      "spectator_groups",
       "match_results",
       "match_result_players",
     ]) {
@@ -506,6 +528,21 @@ const initDB = async () => {
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tournament_settings_tournament_unique
       ON tournament_settings(tournament_id);
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_spectator_groups_tournament_group_unique
+      ON spectator_groups(tournament_id, group_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_spectator_group_entries_group_id
+      ON spectator_group_entries(spectator_group_id);
+    `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_spectator_group_entries_group_spectator_unique
+      ON spectator_group_entries(spectator_group_id, spectator_id);
     `);
 
     await pool.query(`
