@@ -147,7 +147,6 @@ spectatorNamespace.on("connection", (socket) => {
 
       const watcher = {
         sockets: new Set([socket.id]),
-        latestSerialized: "",
         timerId: null,
       };
 
@@ -157,13 +156,12 @@ spectatorNamespace.on("connection", (socket) => {
             normalizedTournamentId,
             normalizedMatchId,
           );
-          const serialized = JSON.stringify(payload);
-
-          if (serialized !== watcher.latestSerialized) {
-            watcher.latestSerialized = serialized;
-            spectatorNamespace.to(roomName).emit("camera_update", payload);
-          }
+          spectatorNamespace.to(roomName).emit("camera_update", payload);
         } catch (error) {
+          spectatorNamespace.to(roomName).emit("camera_error", {
+            matchId: normalizedMatchId,
+            message: error?.message || "Camera watcher error",
+          });
           if (error?.statusCode !== 404) {
             console.error(`Camera watcher error for match ${normalizedMatchId}:`, error.message);
           }
