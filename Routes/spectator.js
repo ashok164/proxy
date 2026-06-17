@@ -6,7 +6,6 @@ const { getTournamentIdFromRequest } = require("../Data/tournamentContext");
 
 const router = express.Router({ mergeParams: true });
 
-const MAX_SPECT_IDS = 4;
 const POLL_INTERVAL_MS = Math.max(
   1500,
   parseInt(process.env.SPECTATOR_POLL_INTERVAL_MS || "3000", 10),
@@ -29,8 +28,7 @@ const getTournamentBucket = (map, tournamentId) => {
 const normalizeSpectIds = (spectIds = []) =>
   spectIds
     .map((value) => String(value || "").trim())
-    .filter(Boolean)
-    .slice(0, MAX_SPECT_IDS);
+    .filter(Boolean);
 
 const toRoomName = (tournamentId, spectId) =>
   `spect_${String(tournamentId)}_${String(spectId)}`;
