@@ -6,10 +6,8 @@ const { getTournamentIdFromRequest } = require("../Data/tournamentContext");
 
 const router = express.Router({ mergeParams: true });
 
-const POLL_INTERVAL_MS = Math.max(
-  1500,
-  parseInt(process.env.SPECTATOR_POLL_INTERVAL_MS || "3000", 10),
-);
+const getPushIntervalMs = () =>
+  Math.max(50, parseInt(process.env.WS_PUSH_INTERVAL_MS, 10) || 100);
 const API_URL = process.env.API_URL;
 const CLIENT_ID = process.env.CLIENT_ID;
 
@@ -73,6 +71,37 @@ const listPlayers = async (tournamentId) => {
   }));
 };
 
+const getPlayerLookup = async (tournamentId) => {
+  const result = await pool.query(
+    `
+    SELECT
+      tp.player_uid,
+      tp.player_name,
+      tp.camera_link,
+      t.team_name
+    FROM team_players tp
+    LEFT JOIN teams t
+      ON t.team_id = tp.team_id
+     AND t.tournament_id = tp.tournament_id
+    WHERE tp.tournament_id = $1
+      AND tp.player_uid IS NOT NULL
+      AND TRIM(tp.player_uid) <> ''
+    `,
+    [tournamentId],
+  );
+
+  const lookup = new Map();
+  result.rows.forEach((row) => {
+    lookup.set(String(row.player_uid), {
+      playerId: String(row.player_uid),
+      playerName: row.player_name || "",
+      cameraLink: row.camera_link || "",
+      teamName: row.team_name || "",
+    });
+  });
+  return lookup;
+};
+
 const getEnabledMatchIds = async (tournamentId) => {
   const result = await pool.query(
     `
@@ -121,9 +150,10 @@ const findSpectatorObservation = async (spectatorId, matchIds) => {
   return null;
 };
 
-const buildSpectatorFeedForMatch = async (_tournamentId, matchId) => {
+const buildSpectatorFeedForMatch = async (tournamentId, matchId) => {
   const rawMatch = await fetchGarenaMatch(String(matchId));
   const spectorInfo = rawMatch?.match?.match_stats_extra?.spector_info;
+  const playerLookup = await getPlayerLookup(tournamentId);
   if (!Array.isArray(spectorInfo)) {
     return {
       matchId: String(matchId),
@@ -133,12 +163,18 @@ const buildSpectatorFeedForMatch = async (_tournamentId, matchId) => {
 
   return {
     matchId: String(matchId),
-    spectators: spectorInfo.map((entry) => ({
-      spectatorId: String(entry?.spector_id || "").trim(),
-      observerId: String(entry?.observer_id || "").trim(),
-      observerName: String(entry?.observer_name || "").trim(),
-      observerTeamName: String(entry?.observer_team_name || "").trim(),
-    })),
+    spectators: spectorInfo.map((entry) => {
+      const observerId = String(entry?.observer_id || "").trim();
+      const savedPlayer = playerLookup.get(observerId);
+
+      return {
+        spectatorId: String(entry?.spector_id || "").trim(),
+        playerId: observerId,
+        playerName: savedPlayer?.playerName || String(entry?.observer_name || "").trim(),
+        cameraLink: savedPlayer?.cameraLink || "",
+        teamName: savedPlayer?.teamName || String(entry?.observer_team_name || "").trim(),
+      };
+    }),
   };
 };
 
@@ -159,9 +195,9 @@ const buildLegacySpectatorPayloadForMatch = async (tournamentId, spectId, matchI
   return {
     spectatorId: String(row.spectatorId || spectId),
     matchId: String(feed.matchId || matchId),
-    observerId: String(row.observerId || ""),
-    observerName: String(row.observerName || ""),
-    observerTeamName: String(row.observerTeamName || ""),
+    observerId: String(row.playerId || ""),
+    observerName: String(row.playerName || ""),
+    observerTeamName: String(row.teamName || ""),
   };
 };
 
@@ -237,7 +273,7 @@ const ensureTournamentEngine = (req, tournamentId) => {
     tick().catch((error) => {
       console.error("Spectator engine tick failed:", error.message);
     });
-  }, POLL_INTERVAL_MS);
+  }, getPushIntervalMs());
 
   enginesByTournament.set(key, timerId);
   tick().catch((error) => {
