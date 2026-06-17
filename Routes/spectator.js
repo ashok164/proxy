@@ -144,6 +144,29 @@ const buildSpectatorFeedForMatch = async (_tournamentId, matchId) => {
   };
 };
 
+const buildLegacySpectatorPayloadForMatch = async (tournamentId, spectId, matchId) => {
+  const feed = await buildSpectatorFeedForMatch(tournamentId, matchId);
+  const row = Array.isArray(feed?.spectators)
+    ? feed.spectators.find(
+        (entry) => String(entry?.spectatorId || "").trim() === String(spectId || "").trim(),
+      )
+    : null;
+
+  if (!row) {
+    const error = new Error("spectatorId was not found in Garena match data");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  return {
+    spectatorId: String(row.spectatorId || spectId),
+    matchId: String(feed.matchId || matchId),
+    observerId: String(row.observerId || ""),
+    observerName: String(row.observerName || ""),
+    observerTeamName: String(row.observerTeamName || ""),
+  };
+};
+
 const buildSpectatorPayload = async (tournamentId, spectId) => {
   const groups = Array.from(getTournamentBucket(groupsByTournament, tournamentId).values());
   const group = groups.find((entry) => entry.spectIds.includes(String(spectId)));
@@ -168,7 +191,7 @@ const buildSpectatorPayload = async (tournamentId, spectId) => {
     throw error;
   }
 
-  return buildSpectatorPayloadForMatch(tournamentId, spectId, observation.matchId);
+  return buildLegacySpectatorPayloadForMatch(tournamentId, spectId, observation.matchId);
 };
 
 const ensureTournamentEngine = (req, tournamentId) => {
@@ -193,8 +216,9 @@ const ensureTournamentEngine = (req, tournamentId) => {
           const previous = latestBucket.get(spectId);
           const changed =
             !previous ||
-            previous.playerId !== payload.playerId ||
-            previous.camera !== payload.camera ||
+            previous.observerId !== payload.observerId ||
+            previous.observerName !== payload.observerName ||
+            previous.observerTeamName !== payload.observerTeamName ||
             previous.matchId !== payload.matchId;
 
           latestBucket.set(spectId, payload);
