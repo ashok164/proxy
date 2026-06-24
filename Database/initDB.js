@@ -284,6 +284,7 @@ const initDB = async () => {
         id SERIAL PRIMARY KEY,
         tournament_id INTEGER REFERENCES tournaments(id) ON DELETE CASCADE,
         overall_ranking_enabled BOOLEAN NOT NULL DEFAULT false,
+        team_elimination_player_enabled BOOLEAN NOT NULL DEFAULT false,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );

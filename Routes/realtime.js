@@ -457,6 +457,7 @@ const ensureTournamentSettingsTable = async () => {
       show_live_standings_points BOOLEAN NOT NULL DEFAULT false,
       show_roster_team_logos BOOLEAN NOT NULL DEFAULT true,
       roster_page_switch BOOLEAN NOT NULL DEFAULT false,
+      team_elimination_player_enabled BOOLEAN NOT NULL DEFAULT false,
       live_standings_2_color_1 VARCHAR(7) NOT NULL DEFAULT '#022024',
       live_standings_2_color_2 VARCHAR(7) NOT NULL DEFAULT '#ffffff',
       live_standings_2_color_3 VARCHAR(7) NOT NULL DEFAULT '#044b52',
@@ -501,6 +502,10 @@ const ensureTournamentSettingsTable = async () => {
   await pool.query(`
     ALTER TABLE tournament_settings
     ADD COLUMN IF NOT EXISTS roster_page_switch BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS team_elimination_player_enabled BOOLEAN NOT NULL DEFAULT false
   `);
   await pool.query(`
     ALTER TABLE tournament_settings
@@ -552,6 +557,7 @@ const getTournamentSettings = async (tournamentId = null) => {
       show_live_standings_points,
       show_roster_team_logos,
       roster_page_switch,
+      team_elimination_player_enabled,
       live_standings_2_color_1,
       live_standings_2_color_2,
       live_standings_2_color_3,
@@ -579,6 +585,7 @@ const getTournamentSettings = async (tournamentId = null) => {
     showLiveStandingsPoints: Boolean(row.show_live_standings_points),
     showRosterTeamLogos: row.show_roster_team_logos !== false,
     rosterPageSwitch: Boolean(row.roster_page_switch),
+    teamEliminationPlayerEnabled: Boolean(row.team_elimination_player_enabled),
     liveStandings2Color1: toHexColor(row.live_standings_2_color_1, "#022024"),
     liveStandings2Color2: toHexColor(row.live_standings_2_color_2, "#ffffff"),
     liveStandings2Color3: toHexColor(row.live_standings_2_color_3, "#044b52"),
@@ -1801,6 +1808,7 @@ router.get(broadcastDisplaySettingsRoutes, async (req, res) => {
         showLiveStandingsPoints: settings.showLiveStandingsPoints,
         showRosterTeamLogos: settings.showRosterTeamLogos,
         rosterPageSwitch: settings.rosterPageSwitch,
+        teamEliminationPlayerEnabled: settings.teamEliminationPlayerEnabled,
         liveStandings2Color1: settings.liveStandings2Color1,
         liveStandings2Color2: settings.liveStandings2Color2,
         liveStandings2Color3: settings.liveStandings2Color3,
@@ -1855,6 +1863,10 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         input.rosterPageSwitch ?? input.roster_page_switch,
         current.rosterPageSwitch,
       ),
+      teamEliminationPlayerEnabled: toBoolean(
+        input.teamEliminationPlayerEnabled ?? input.team_elimination_player_enabled,
+        current.teamEliminationPlayerEnabled,
+      ),
       liveStandings2Color1: toHexColor(
         input.liveStandings2Color1 ?? input.live_standings_2_color_1,
         current.liveStandings2Color1,
@@ -1904,6 +1916,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         show_live_standings_points,
         show_roster_team_logos,
         roster_page_switch,
+        team_elimination_player_enabled,
         live_standings_2_color_1,
         live_standings_2_color_2,
         live_standings_2_color_3,
@@ -1915,7 +1928,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         live_standings_2_text_color_4,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
       ON CONFLICT (tournament_id) DO UPDATE
       SET broadcast_theme_enabled = EXCLUDED.broadcast_theme_enabled,
           broadcast_style = EXCLUDED.broadcast_style,
@@ -1924,6 +1937,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
            show_live_standings_points = EXCLUDED.show_live_standings_points,
            show_roster_team_logos = EXCLUDED.show_roster_team_logos,
            roster_page_switch = EXCLUDED.roster_page_switch,
+           team_elimination_player_enabled = EXCLUDED.team_elimination_player_enabled,
            live_standings_2_color_1 = EXCLUDED.live_standings_2_color_1,
            live_standings_2_color_2 = EXCLUDED.live_standings_2_color_2,
            live_standings_2_color_3 = EXCLUDED.live_standings_2_color_3,
@@ -1942,6 +1956,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         show_live_standings_points,
         show_roster_team_logos,
         roster_page_switch,
+        team_elimination_player_enabled,
         live_standings_2_color_1,
         live_standings_2_color_2,
         live_standings_2_color_3,
@@ -1961,6 +1976,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         next.showLiveStandingsPoints,
         next.showRosterTeamLogos,
         next.rosterPageSwitch,
+        next.teamEliminationPlayerEnabled,
         next.liveStandings2Color1,
         next.liveStandings2Color2,
         next.liveStandings2Color3,
@@ -1989,6 +2005,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         showLiveStandingsPoints: Boolean(row.show_live_standings_points),
         showRosterTeamLogos: row.show_roster_team_logos !== false,
         rosterPageSwitch: Boolean(row.roster_page_switch),
+        teamEliminationPlayerEnabled: Boolean(row.team_elimination_player_enabled),
         liveStandings2Color1: toHexColor(row.live_standings_2_color_1, "#022024"),
         liveStandings2Color2: toHexColor(row.live_standings_2_color_2, "#ffffff"),
         liveStandings2Color3: toHexColor(row.live_standings_2_color_3, "#044b52"),
