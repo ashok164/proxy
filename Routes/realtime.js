@@ -451,11 +451,21 @@ const ensureTournamentSettingsTable = async () => {
       tournament_id INTEGER,
       overall_ranking_enabled BOOLEAN NOT NULL DEFAULT false,
       broadcast_theme_enabled BOOLEAN NOT NULL DEFAULT true,
+      broadcast_style TEXT NOT NULL DEFAULT 'theme1',
       champion_rush_enabled BOOLEAN NOT NULL DEFAULT false,
       show_country_flags BOOLEAN NOT NULL DEFAULT false,
       show_live_standings_points BOOLEAN NOT NULL DEFAULT false,
       show_roster_team_logos BOOLEAN NOT NULL DEFAULT true,
       roster_page_switch BOOLEAN NOT NULL DEFAULT false,
+      live_standings_2_color_1 VARCHAR(7) NOT NULL DEFAULT '#022024',
+      live_standings_2_color_2 VARCHAR(7) NOT NULL DEFAULT '#ffffff',
+      live_standings_2_color_3 VARCHAR(7) NOT NULL DEFAULT '#044b52',
+      live_standings_2_color_4 VARCHAR(7) NOT NULL DEFAULT '#011316',
+      live_standings_2_color_5 VARCHAR(7) NOT NULL DEFAULT '#f04a18',
+      live_standings_2_text_color_1 VARCHAR(7) NOT NULL DEFAULT '#ffffff',
+      live_standings_2_text_color_2 VARCHAR(7) NOT NULL DEFAULT '#0a1719',
+      live_standings_2_text_color_3 VARCHAR(7) NOT NULL DEFAULT '#01e6f1',
+      live_standings_2_text_color_4 VARCHAR(7) NOT NULL DEFAULT '#ffffff',
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
@@ -467,6 +477,10 @@ const ensureTournamentSettingsTable = async () => {
   await pool.query(`
     ALTER TABLE tournament_settings
     ADD COLUMN IF NOT EXISTS broadcast_theme_enabled BOOLEAN NOT NULL DEFAULT true
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS broadcast_style TEXT NOT NULL DEFAULT 'theme1'
   `);
   await pool.query(`
     ALTER TABLE tournament_settings
@@ -489,6 +503,18 @@ const ensureTournamentSettingsTable = async () => {
     ADD COLUMN IF NOT EXISTS roster_page_switch BOOLEAN NOT NULL DEFAULT false
   `);
   await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS live_standings_2_color_1 VARCHAR(7) NOT NULL DEFAULT '#022024',
+    ADD COLUMN IF NOT EXISTS live_standings_2_color_2 VARCHAR(7) NOT NULL DEFAULT '#ffffff',
+    ADD COLUMN IF NOT EXISTS live_standings_2_color_3 VARCHAR(7) NOT NULL DEFAULT '#044b52',
+    ADD COLUMN IF NOT EXISTS live_standings_2_color_4 VARCHAR(7) NOT NULL DEFAULT '#011316',
+    ADD COLUMN IF NOT EXISTS live_standings_2_color_5 VARCHAR(7) NOT NULL DEFAULT '#f04a18',
+    ADD COLUMN IF NOT EXISTS live_standings_2_text_color_1 VARCHAR(7) NOT NULL DEFAULT '#ffffff',
+    ADD COLUMN IF NOT EXISTS live_standings_2_text_color_2 VARCHAR(7) NOT NULL DEFAULT '#0a1719',
+    ADD COLUMN IF NOT EXISTS live_standings_2_text_color_3 VARCHAR(7) NOT NULL DEFAULT '#01e6f1',
+    ADD COLUMN IF NOT EXISTS live_standings_2_text_color_4 VARCHAR(7) NOT NULL DEFAULT '#ffffff'
+  `);
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tournament_settings_tournament_unique
     ON tournament_settings(tournament_id)
   `);
@@ -504,6 +530,11 @@ const toBoolean = (value, fallback = false) => {
   return fallback;
 };
 
+const toHexColor = (value, fallback) => {
+  const color = String(value ?? "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : fallback;
+};
+
 const getTournamentSettings = async (tournamentId = null) => {
   await ensureTournamentSettingsTable();
   const result = await pool.query(
@@ -515,11 +546,21 @@ const getTournamentSettings = async (tournamentId = null) => {
     RETURNING
       overall_ranking_enabled,
       broadcast_theme_enabled,
+      broadcast_style,
       champion_rush_enabled,
       show_country_flags,
       show_live_standings_points,
       show_roster_team_logos,
-      roster_page_switch
+      roster_page_switch,
+      live_standings_2_color_1,
+      live_standings_2_color_2,
+      live_standings_2_color_3,
+      live_standings_2_color_4,
+      live_standings_2_color_5,
+      live_standings_2_text_color_1,
+      live_standings_2_text_color_2,
+      live_standings_2_text_color_3,
+      live_standings_2_text_color_4
     `,
     [tournamentId],
   );
@@ -530,11 +571,23 @@ const getTournamentSettings = async (tournamentId = null) => {
     overallRankingEnabled: Boolean(row.overall_ranking_enabled),
     overall_ranking_enabled: Boolean(row.overall_ranking_enabled),
     broadcastThemeEnabled: Boolean(row.broadcast_theme_enabled),
+    selectedBroadcastTheme: ["theme1", "theme2", "theme3"].includes(row.broadcast_style)
+      ? row.broadcast_style
+      : "theme1",
     championRushEnabled: Boolean(row.champion_rush_enabled),
     showCountryFlags: Boolean(row.show_country_flags),
     showLiveStandingsPoints: Boolean(row.show_live_standings_points),
     showRosterTeamLogos: row.show_roster_team_logos !== false,
     rosterPageSwitch: Boolean(row.roster_page_switch),
+    liveStandings2Color1: toHexColor(row.live_standings_2_color_1, "#022024"),
+    liveStandings2Color2: toHexColor(row.live_standings_2_color_2, "#ffffff"),
+    liveStandings2Color3: toHexColor(row.live_standings_2_color_3, "#044b52"),
+    liveStandings2Color4: toHexColor(row.live_standings_2_color_4, "#011316"),
+    liveStandings2Color5: toHexColor(row.live_standings_2_color_5, "#f04a18"),
+    liveStandings2TextColor1: toHexColor(row.live_standings_2_text_color_1, "#ffffff"),
+    liveStandings2TextColor2: toHexColor(row.live_standings_2_text_color_2, "#0a1719"),
+    liveStandings2TextColor3: toHexColor(row.live_standings_2_text_color_3, "#01e6f1"),
+    liveStandings2TextColor4: toHexColor(row.live_standings_2_text_color_4, "#ffffff"),
   };
 };
 
@@ -1741,11 +1794,22 @@ router.get(broadcastDisplaySettingsRoutes, async (req, res) => {
       success: true,
       settings: {
         broadcastThemeEnabled: settings.broadcastThemeEnabled,
+        selectedBroadcastTheme: settings.selectedBroadcastTheme,
+        selectedBroadcastStyle: settings.selectedBroadcastTheme,
         championRushEnabled: settings.championRushEnabled,
         showCountryFlags: settings.showCountryFlags,
         showLiveStandingsPoints: settings.showLiveStandingsPoints,
         showRosterTeamLogos: settings.showRosterTeamLogos,
         rosterPageSwitch: settings.rosterPageSwitch,
+        liveStandings2Color1: settings.liveStandings2Color1,
+        liveStandings2Color2: settings.liveStandings2Color2,
+        liveStandings2Color3: settings.liveStandings2Color3,
+        liveStandings2Color4: settings.liveStandings2Color4,
+        liveStandings2Color5: settings.liveStandings2Color5,
+        liveStandings2TextColor1: settings.liveStandings2TextColor1,
+        liveStandings2TextColor2: settings.liveStandings2TextColor2,
+        liveStandings2TextColor3: settings.liveStandings2TextColor3,
+        liveStandings2TextColor4: settings.liveStandings2TextColor4,
       },
     });
   } catch (err) {
@@ -1766,6 +1830,11 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         input.broadcastThemeEnabled ?? input.broadcast_theme_enabled,
         current.broadcastThemeEnabled,
       ),
+      selectedBroadcastTheme: ["theme1", "theme2", "theme3"].includes(
+        input.selectedBroadcastStyle ?? input.selectedBroadcastTheme ?? input.broadcastStyle ?? input.broadcast_style,
+      )
+        ? input.selectedBroadcastStyle ?? input.selectedBroadcastTheme ?? input.broadcastStyle ?? input.broadcast_style
+        : current.selectedBroadcastTheme,
       championRushEnabled: toBoolean(
         input.championRushEnabled ?? input.champion_rush_enabled,
         current.championRushEnabled,
@@ -1786,6 +1855,42 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         input.rosterPageSwitch ?? input.roster_page_switch,
         current.rosterPageSwitch,
       ),
+      liveStandings2Color1: toHexColor(
+        input.liveStandings2Color1 ?? input.live_standings_2_color_1,
+        current.liveStandings2Color1,
+      ),
+      liveStandings2Color2: toHexColor(
+        input.liveStandings2Color2 ?? input.live_standings_2_color_2,
+        current.liveStandings2Color2,
+      ),
+      liveStandings2Color3: toHexColor(
+        input.liveStandings2Color3 ?? input.live_standings_2_color_3,
+        current.liveStandings2Color3,
+      ),
+      liveStandings2Color4: toHexColor(
+        input.liveStandings2Color4 ?? input.live_standings_2_color_4,
+        current.liveStandings2Color4,
+      ),
+      liveStandings2Color5: toHexColor(
+        input.liveStandings2Color5 ?? input.live_standings_2_color_5,
+        current.liveStandings2Color5,
+      ),
+      liveStandings2TextColor1: toHexColor(
+        input.liveStandings2TextColor1 ?? input.live_standings_2_text_color_1,
+        current.liveStandings2TextColor1,
+      ),
+      liveStandings2TextColor2: toHexColor(
+        input.liveStandings2TextColor2 ?? input.live_standings_2_text_color_2,
+        current.liveStandings2TextColor2,
+      ),
+      liveStandings2TextColor3: toHexColor(
+        input.liveStandings2TextColor3 ?? input.live_standings_2_text_color_3,
+        current.liveStandings2TextColor3,
+      ),
+      liveStandings2TextColor4: toHexColor(
+        input.liveStandings2TextColor4 ?? input.live_standings_2_text_color_4,
+        current.liveStandings2TextColor4,
+      ),
     };
 
     const result = await pool.query(
@@ -1793,38 +1898,78 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
       INSERT INTO tournament_settings (
         tournament_id,
         broadcast_theme_enabled,
+        broadcast_style,
         champion_rush_enabled,
         show_country_flags,
         show_live_standings_points,
         show_roster_team_logos,
         roster_page_switch,
+        live_standings_2_color_1,
+        live_standings_2_color_2,
+        live_standings_2_color_3,
+        live_standings_2_color_4,
+        live_standings_2_color_5,
+        live_standings_2_text_color_1,
+        live_standings_2_text_color_2,
+        live_standings_2_text_color_3,
+        live_standings_2_text_color_4,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
       ON CONFLICT (tournament_id) DO UPDATE
       SET broadcast_theme_enabled = EXCLUDED.broadcast_theme_enabled,
+          broadcast_style = EXCLUDED.broadcast_style,
           champion_rush_enabled = EXCLUDED.champion_rush_enabled,
           show_country_flags = EXCLUDED.show_country_flags,
-          show_live_standings_points = EXCLUDED.show_live_standings_points,
-          show_roster_team_logos = EXCLUDED.show_roster_team_logos,
-          roster_page_switch = EXCLUDED.roster_page_switch,
-          updated_at = NOW()
+           show_live_standings_points = EXCLUDED.show_live_standings_points,
+           show_roster_team_logos = EXCLUDED.show_roster_team_logos,
+           roster_page_switch = EXCLUDED.roster_page_switch,
+           live_standings_2_color_1 = EXCLUDED.live_standings_2_color_1,
+           live_standings_2_color_2 = EXCLUDED.live_standings_2_color_2,
+           live_standings_2_color_3 = EXCLUDED.live_standings_2_color_3,
+           live_standings_2_color_4 = EXCLUDED.live_standings_2_color_4,
+           live_standings_2_color_5 = EXCLUDED.live_standings_2_color_5,
+           live_standings_2_text_color_1 = EXCLUDED.live_standings_2_text_color_1,
+           live_standings_2_text_color_2 = EXCLUDED.live_standings_2_text_color_2,
+           live_standings_2_text_color_3 = EXCLUDED.live_standings_2_text_color_3,
+           live_standings_2_text_color_4 = EXCLUDED.live_standings_2_text_color_4,
+           updated_at = NOW()
       RETURNING
         broadcast_theme_enabled,
+        broadcast_style,
         champion_rush_enabled,
         show_country_flags,
         show_live_standings_points,
         show_roster_team_logos,
-        roster_page_switch
+        roster_page_switch,
+        live_standings_2_color_1,
+        live_standings_2_color_2,
+        live_standings_2_color_3,
+        live_standings_2_color_4,
+        live_standings_2_color_5,
+        live_standings_2_text_color_1,
+        live_standings_2_text_color_2,
+        live_standings_2_text_color_3,
+        live_standings_2_text_color_4
       `,
       [
         tournamentId,
         next.broadcastThemeEnabled,
+        next.selectedBroadcastTheme,
         next.championRushEnabled,
         next.showCountryFlags,
         next.showLiveStandingsPoints,
         next.showRosterTeamLogos,
         next.rosterPageSwitch,
+        next.liveStandings2Color1,
+        next.liveStandings2Color2,
+        next.liveStandings2Color3,
+        next.liveStandings2Color4,
+        next.liveStandings2Color5,
+        next.liveStandings2TextColor1,
+        next.liveStandings2TextColor2,
+        next.liveStandings2TextColor3,
+        next.liveStandings2TextColor4,
       ],
     );
     const row = result.rows[0] || {};
@@ -1833,11 +1978,26 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
       success: true,
       settings: {
         broadcastThemeEnabled: Boolean(row.broadcast_theme_enabled),
+        selectedBroadcastTheme: ["theme1", "theme2", "theme3"].includes(row.broadcast_style)
+          ? row.broadcast_style
+          : "theme1",
+        selectedBroadcastStyle: ["theme1", "theme2", "theme3"].includes(row.broadcast_style)
+          ? row.broadcast_style
+          : "theme1",
         championRushEnabled: Boolean(row.champion_rush_enabled),
         showCountryFlags: Boolean(row.show_country_flags),
         showLiveStandingsPoints: Boolean(row.show_live_standings_points),
         showRosterTeamLogos: row.show_roster_team_logos !== false,
         rosterPageSwitch: Boolean(row.roster_page_switch),
+        liveStandings2Color1: toHexColor(row.live_standings_2_color_1, "#022024"),
+        liveStandings2Color2: toHexColor(row.live_standings_2_color_2, "#ffffff"),
+        liveStandings2Color3: toHexColor(row.live_standings_2_color_3, "#044b52"),
+        liveStandings2Color4: toHexColor(row.live_standings_2_color_4, "#011316"),
+        liveStandings2Color5: toHexColor(row.live_standings_2_color_5, "#f04a18"),
+        liveStandings2TextColor1: toHexColor(row.live_standings_2_text_color_1, "#ffffff"),
+        liveStandings2TextColor2: toHexColor(row.live_standings_2_text_color_2, "#0a1719"),
+        liveStandings2TextColor3: toHexColor(row.live_standings_2_text_color_3, "#01e6f1"),
+        liveStandings2TextColor4: toHexColor(row.live_standings_2_text_color_4, "#ffffff"),
       },
     });
   } catch (err) {
