@@ -455,6 +455,7 @@ const ensureTournamentSettingsTable = async () => {
       champion_rush_enabled BOOLEAN NOT NULL DEFAULT false,
       show_country_flags BOOLEAN NOT NULL DEFAULT false,
       show_live_standings_points BOOLEAN NOT NULL DEFAULT false,
+      show_result_standings BOOLEAN NOT NULL DEFAULT true,
       show_roster_team_logos BOOLEAN NOT NULL DEFAULT true,
       roster_page_switch BOOLEAN NOT NULL DEFAULT false,
       team_elimination_player_enabled BOOLEAN NOT NULL DEFAULT false,
@@ -494,6 +495,10 @@ const ensureTournamentSettingsTable = async () => {
   await pool.query(`
     ALTER TABLE tournament_settings
     ADD COLUMN IF NOT EXISTS show_live_standings_points BOOLEAN NOT NULL DEFAULT false
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS show_result_standings BOOLEAN NOT NULL DEFAULT true
   `);
   await pool.query(`
     ALTER TABLE tournament_settings
@@ -555,6 +560,7 @@ const getTournamentSettings = async (tournamentId = null) => {
       champion_rush_enabled,
       show_country_flags,
       show_live_standings_points,
+      show_result_standings,
       show_roster_team_logos,
       roster_page_switch,
       team_elimination_player_enabled,
@@ -583,6 +589,7 @@ const getTournamentSettings = async (tournamentId = null) => {
     championRushEnabled: Boolean(row.champion_rush_enabled),
     showCountryFlags: Boolean(row.show_country_flags),
     showLiveStandingsPoints: Boolean(row.show_live_standings_points),
+    showResultStandings: row.show_result_standings !== false,
     showRosterTeamLogos: row.show_roster_team_logos !== false,
     rosterPageSwitch: Boolean(row.roster_page_switch),
     teamEliminationPlayerEnabled: Boolean(row.team_elimination_player_enabled),
@@ -1806,6 +1813,7 @@ router.get(broadcastDisplaySettingsRoutes, async (req, res) => {
         championRushEnabled: settings.championRushEnabled,
         showCountryFlags: settings.showCountryFlags,
         showLiveStandingsPoints: settings.showLiveStandingsPoints,
+        showResultStandings: settings.showResultStandings,
         showRosterTeamLogos: settings.showRosterTeamLogos,
         rosterPageSwitch: settings.rosterPageSwitch,
         teamEliminationPlayerEnabled: settings.teamEliminationPlayerEnabled,
@@ -1854,6 +1862,10 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
       showLiveStandingsPoints: toBoolean(
         input.showLiveStandingsPoints ?? input.show_live_standings_points,
         current.showLiveStandingsPoints,
+      ),
+      showResultStandings: toBoolean(
+        input.showResultStandings ?? input.show_result_standings,
+        current.showResultStandings,
       ),
       showRosterTeamLogos: toBoolean(
         input.showRosterTeamLogos ?? input.show_roster_team_logos,
@@ -1914,6 +1926,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         champion_rush_enabled,
         show_country_flags,
         show_live_standings_points,
+        show_result_standings,
         show_roster_team_logos,
         roster_page_switch,
         team_elimination_player_enabled,
@@ -1928,13 +1941,14 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         live_standings_2_text_color_4,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
       ON CONFLICT (tournament_id) DO UPDATE
       SET broadcast_theme_enabled = EXCLUDED.broadcast_theme_enabled,
           broadcast_style = EXCLUDED.broadcast_style,
           champion_rush_enabled = EXCLUDED.champion_rush_enabled,
           show_country_flags = EXCLUDED.show_country_flags,
            show_live_standings_points = EXCLUDED.show_live_standings_points,
+           show_result_standings = EXCLUDED.show_result_standings,
            show_roster_team_logos = EXCLUDED.show_roster_team_logos,
            roster_page_switch = EXCLUDED.roster_page_switch,
            team_elimination_player_enabled = EXCLUDED.team_elimination_player_enabled,
@@ -1954,6 +1968,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         champion_rush_enabled,
         show_country_flags,
         show_live_standings_points,
+        show_result_standings,
         show_roster_team_logos,
         roster_page_switch,
         team_elimination_player_enabled,
@@ -1974,6 +1989,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         next.championRushEnabled,
         next.showCountryFlags,
         next.showLiveStandingsPoints,
+        next.showResultStandings,
         next.showRosterTeamLogos,
         next.rosterPageSwitch,
         next.teamEliminationPlayerEnabled,
@@ -2003,6 +2019,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         championRushEnabled: Boolean(row.champion_rush_enabled),
         showCountryFlags: Boolean(row.show_country_flags),
         showLiveStandingsPoints: Boolean(row.show_live_standings_points),
+        showResultStandings: row.show_result_standings !== false,
         showRosterTeamLogos: row.show_roster_team_logos !== false,
         rosterPageSwitch: Boolean(row.roster_page_switch),
         teamEliminationPlayerEnabled: Boolean(row.team_elimination_player_enabled),
