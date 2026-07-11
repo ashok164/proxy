@@ -558,7 +558,7 @@ const toHexColor = (value, fallback) => {
 const toAnimationSpeed = (value, fallback = 1) => {
   const numberValue = Number(value);
   if (!Number.isFinite(numberValue)) return fallback;
-  return Math.min(4, Math.max(0.25, numberValue));
+  return Math.min(10, Math.max(0.01, numberValue));
 };
 
 const getTournamentSettings = async (tournamentId = null) => {
