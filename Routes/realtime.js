@@ -459,6 +459,7 @@ const ensureTournamentSettingsTable = async () => {
       show_roster_team_logos BOOLEAN NOT NULL DEFAULT true,
       roster_page_switch BOOLEAN NOT NULL DEFAULT false,
       circle_analysis_animation_enabled BOOLEAN NOT NULL DEFAULT false,
+      circle_analysis_animation_speed NUMERIC NOT NULL DEFAULT 1,
       team_elimination_player_enabled BOOLEAN NOT NULL DEFAULT false,
       live_standings_2_color_1 VARCHAR(7) NOT NULL DEFAULT '#022024',
       live_standings_2_color_2 VARCHAR(7) NOT NULL DEFAULT '#ffffff',
@@ -515,6 +516,10 @@ const ensureTournamentSettingsTable = async () => {
   `);
   await pool.query(`
     ALTER TABLE tournament_settings
+    ADD COLUMN IF NOT EXISTS circle_analysis_animation_speed NUMERIC NOT NULL DEFAULT 1
+  `);
+  await pool.query(`
+    ALTER TABLE tournament_settings
     ADD COLUMN IF NOT EXISTS team_elimination_player_enabled BOOLEAN NOT NULL DEFAULT false
   `);
   await pool.query(`
@@ -550,6 +555,12 @@ const toHexColor = (value, fallback) => {
   return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : fallback;
 };
 
+const toAnimationSpeed = (value, fallback = 1) => {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.min(4, Math.max(0.25, numberValue));
+};
+
 const getTournamentSettings = async (tournamentId = null) => {
   await ensureTournamentSettingsTable();
   const result = await pool.query(
@@ -569,6 +580,7 @@ const getTournamentSettings = async (tournamentId = null) => {
       show_roster_team_logos,
       roster_page_switch,
       circle_analysis_animation_enabled,
+      circle_analysis_animation_speed,
       team_elimination_player_enabled,
       live_standings_2_color_1,
       live_standings_2_color_2,
@@ -599,6 +611,7 @@ const getTournamentSettings = async (tournamentId = null) => {
     showRosterTeamLogos: row.show_roster_team_logos !== false,
     rosterPageSwitch: Boolean(row.roster_page_switch),
     circleAnalysisAnimationEnabled: Boolean(row.circle_analysis_animation_enabled),
+    circleAnalysisAnimationSpeed: toAnimationSpeed(row.circle_analysis_animation_speed, 1),
     teamEliminationPlayerEnabled: Boolean(row.team_elimination_player_enabled),
     liveStandings2Color1: toHexColor(row.live_standings_2_color_1, "#022024"),
     liveStandings2Color2: toHexColor(row.live_standings_2_color_2, "#ffffff"),
@@ -1824,6 +1837,7 @@ router.get(broadcastDisplaySettingsRoutes, async (req, res) => {
         showRosterTeamLogos: settings.showRosterTeamLogos,
         rosterPageSwitch: settings.rosterPageSwitch,
         circleAnalysisAnimationEnabled: settings.circleAnalysisAnimationEnabled,
+        circleAnalysisAnimationSpeed: settings.circleAnalysisAnimationSpeed,
         teamEliminationPlayerEnabled: settings.teamEliminationPlayerEnabled,
         liveStandings2Color1: settings.liveStandings2Color1,
         liveStandings2Color2: settings.liveStandings2Color2,
@@ -1887,6 +1901,10 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         input.circleAnalysisAnimationEnabled ?? input.circle_analysis_animation_enabled,
         current.circleAnalysisAnimationEnabled,
       ),
+      circleAnalysisAnimationSpeed: toAnimationSpeed(
+        input.circleAnalysisAnimationSpeed ?? input.circle_analysis_animation_speed,
+        current.circleAnalysisAnimationSpeed,
+      ),
       teamEliminationPlayerEnabled: toBoolean(
         input.teamEliminationPlayerEnabled ?? input.team_elimination_player_enabled,
         current.teamEliminationPlayerEnabled,
@@ -1942,6 +1960,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         show_roster_team_logos,
         roster_page_switch,
         circle_analysis_animation_enabled,
+        circle_analysis_animation_speed,
         team_elimination_player_enabled,
         live_standings_2_color_1,
         live_standings_2_color_2,
@@ -1954,7 +1973,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         live_standings_2_text_color_4,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW())
       ON CONFLICT (tournament_id) DO UPDATE
       SET broadcast_theme_enabled = EXCLUDED.broadcast_theme_enabled,
           broadcast_style = EXCLUDED.broadcast_style,
@@ -1965,6 +1984,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
            show_roster_team_logos = EXCLUDED.show_roster_team_logos,
            roster_page_switch = EXCLUDED.roster_page_switch,
            circle_analysis_animation_enabled = EXCLUDED.circle_analysis_animation_enabled,
+           circle_analysis_animation_speed = EXCLUDED.circle_analysis_animation_speed,
            team_elimination_player_enabled = EXCLUDED.team_elimination_player_enabled,
            live_standings_2_color_1 = EXCLUDED.live_standings_2_color_1,
            live_standings_2_color_2 = EXCLUDED.live_standings_2_color_2,
@@ -1986,6 +2006,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         show_roster_team_logos,
         roster_page_switch,
         circle_analysis_animation_enabled,
+        circle_analysis_animation_speed,
         team_elimination_player_enabled,
         live_standings_2_color_1,
         live_standings_2_color_2,
@@ -2008,6 +2029,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         next.showRosterTeamLogos,
         next.rosterPageSwitch,
         next.circleAnalysisAnimationEnabled,
+        next.circleAnalysisAnimationSpeed,
         next.teamEliminationPlayerEnabled,
         next.liveStandings2Color1,
         next.liveStandings2Color2,
@@ -2039,6 +2061,7 @@ router.patch(broadcastDisplaySettingsRoutes, async (req, res) => {
         showRosterTeamLogos: row.show_roster_team_logos !== false,
         rosterPageSwitch: Boolean(row.roster_page_switch),
         circleAnalysisAnimationEnabled: Boolean(row.circle_analysis_animation_enabled),
+        circleAnalysisAnimationSpeed: toAnimationSpeed(row.circle_analysis_animation_speed, 1),
         teamEliminationPlayerEnabled: Boolean(row.team_elimination_player_enabled),
         liveStandings2Color1: toHexColor(row.live_standings_2_color_1, "#022024"),
         liveStandings2Color2: toHexColor(row.live_standings_2_color_2, "#ffffff"),
