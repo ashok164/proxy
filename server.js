@@ -207,6 +207,7 @@ app.use("/api/match_stats", matchStatsRoutes);
 app.use("/api/results", matchResultRoutes);
 app.use("/api/results", googleSheetsRoutes);
 app.use("/api", spectatorRoutes.router);
+app.use("/:tournamentSlug/api", gameAssetRoutes);
 app.use("/api", gameAssetRoutes);
 
 /* ================= VERSION ================= */

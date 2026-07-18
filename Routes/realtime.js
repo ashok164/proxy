@@ -406,24 +406,6 @@ const buildTeamBannerIndex = async (tournamentId = null) => {
   const index = {};
 
   try {
-    const fullBannerResult = await pool.query(`
-      SELECT team_id, image_url
-      FROM full_team_banners
-      WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
-        AND ($1::integer IS NULL OR tournament_id = $1)
-      ORDER BY id DESC
-    `, [tournamentId]);
-
-    for (const row of fullBannerResult.rows) {
-      addBannerToIndex(index, row, "fullTeamBanner");
-    }
-  } catch (err) {
-    if (!["42P01", "42703"].includes(err.code)) {
-      console.error("Full team banner lookup failed:", err.message);
-    }
-  }
-
-  try {
     const notificationBannerResult = await pool.query(`
       SELECT team_id, image_url
       FROM notification_team_banners
@@ -718,7 +700,7 @@ const buildOverallLeaderboard = async (
       teamTag: getTeamTag(team) || "",
       teamLogo: team.teamLogo || team.team_logo || "",
       countryLogo: team.countryLogo || team.country_logo || "",
-      fullTeamBanner: team.fullTeamBanner || team.full_team_banner || "",
+      fullTeamBanner: "",
       notificationTeamBanner:
         team.notificationTeamBanner || team.notification_team_banner || "",
       booyahBanner: team.booyahBanner || team.booyah_banner || "",
@@ -773,7 +755,7 @@ const buildOverallLeaderboard = async (
       teamTag: live.teamTag || historical.teamTag,
       teamLogo: live.teamLogo || historical.teamLogo,
       countryLogo: live.countryLogo || historical.countryLogo,
-      fullTeamBanner: live.fullTeamBanner || bannerIndex[teamId]?.fullTeamBanner || "",
+      fullTeamBanner: "",
       notificationTeamBanner:
         live.notificationTeamBanner || bannerIndex[teamId]?.notificationTeamBanner || "",
       booyahBanner: live.booyahBanner || live.booyahImage || "",
@@ -1277,7 +1259,7 @@ const mergeTeam = (
 
   const dbTeamLogo = meta.team_logo;
   const teamBanners = teamIdKey ? bannerIndex[teamIdKey] || {} : {};
-  const fullTeamBanner = teamBanners.fullTeamBanner || "";
+  const fullTeamBanner = "";
   const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
   const booyahCount = getTeamBooyahCount(team);
   const booyahBanner = booyahCount > 0 ? booyahAssetImage : "";

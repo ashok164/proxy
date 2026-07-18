@@ -412,24 +412,6 @@ const buildTeamBannerIndex = async (baseUrl, tournamentId) => {
   const index = {};
 
   try {
-    const fullBannerResult = await pool.query(`
-      SELECT team_id, image_url
-      FROM full_team_banners
-      WHERE active = true AND team_id IS NOT NULL AND team_id <> ''
-        AND ($1::integer IS NULL OR tournament_id = $1)
-      ORDER BY id DESC
-    `, [tournamentId]);
-
-    for (const row of fullBannerResult.rows) {
-      addBannerToIndex(index, row, "fullTeamBanner", baseUrl);
-    }
-  } catch (err) {
-    if (!["42P01", "42703"].includes(err.code)) {
-      console.error("Full team banner lookup failed:", err.message);
-    }
-  }
-
-  try {
     const notificationBannerResult = await pool.query(`
       SELECT team_id, image_url
       FROM notification_team_banners
@@ -793,7 +775,7 @@ const formatResultRow = (
   bannerIndex = {},
 ) => {
   const teamBanners = getTeamBanners(bannerIndex, row.team_id);
-  const fullTeamBanner = teamBanners.fullTeamBanner || "";
+  const fullTeamBanner = "";
   const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
   const booyahCount = getStoredBooyahCount(row);
 
@@ -851,7 +833,7 @@ const formatAggregateRow = (
   bannerIndex = {},
 ) => {
   const teamBanners = getTeamBanners(bannerIndex, row.team_id);
-  const fullTeamBanner = teamBanners.fullTeamBanner || "";
+  const fullTeamBanner = "";
   const notificationTeamBanner = teamBanners.notificationTeamBanner || "";
   const booyahCount = Number(row.booyah_count || 0);
 

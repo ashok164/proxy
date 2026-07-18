@@ -281,7 +281,7 @@ const compactTeam = (team) => {
     pls: players.map(compactPlayer),
     cl: team.country_logo || team.countryLogo || "",
     tl: team.team_logo || team.teamLogo || "",
-    fb: team.full_team_banner || team.fullTeamBanner || "",
+    fb: "",
     nb: team.notification_team_banner || team.notificationTeamBanner || "",
     bc: booyahCount,
     booyah_count: booyahCount,
