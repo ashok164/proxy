@@ -59,10 +59,22 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 ========================================================= */
 const uploadPath = path.join(__dirname, "uploads");
 const publicUploadPath = path.join(__dirname, "public/uploads");
+const staticImageOptions = {
+  etag: true,
+  lastModified: true,
+  maxAge: "30d",
+  immutable: true,
+  setHeaders: (res, filePath) => {
+    if (/\.(?:png|jpe?g|webp|gif|svg|ico)$/i.test(filePath)) {
+      res.setHeader("Cache-Control", "public, max-age=2592000, immutable");
+      res.setHeader("Timing-Allow-Origin", "*");
+    }
+  },
+};
 
-app.use("/uploads", express.static(publicUploadPath));
-app.use("/uploads", express.static(uploadPath));
-app.use(express.static(path.join(__dirname, "public")));
+app.use("/uploads", express.static(publicUploadPath, staticImageOptions));
+app.use("/uploads", express.static(uploadPath, staticImageOptions));
+app.use(express.static(path.join(__dirname, "public"), staticImageOptions));
 
 console.log("📁 Uploads exposed at /uploads");
 
