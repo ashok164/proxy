@@ -251,10 +251,12 @@ router.post("/team-players", upload.any(), async (req, res) => {
       });
     }
 
-    if (!files.length) {
+    const rowCount = Math.max(players.length, teamIds.length, files.length);
+
+    if (!rowCount) {
       return res.status(400).json({
         success: false,
-        message: "At least one player image is required",
+        message: "At least one player is required",
       });
     }
 
@@ -262,12 +264,13 @@ router.post("/team-players", upload.any(), async (req, res) => {
 
     const rows = [];
 
-    for (let i = 0; i < files.length; i++) {
+    for (let i = 0; i < rowCount; i++) {
       const teamId = normalizeTeamId(teamIds[i] || teamIds[0]);
       const playerInput = getPlayerInputAt(req.body, players, i);
       const playerName = playerInput.playerName || null;
       const playerUid = playerInput.playerUid || null;
       const cameraLink = playerInput.cameraLink || null;
+      const playerPic = files[i] ? getUploadRelativePath(files[i]) : null;
 
       if (!teamId) continue;
 
@@ -304,7 +307,7 @@ router.post("/team-players", upload.any(), async (req, res) => {
           playerUid,
           playerName,
           cameraLink,
-          getUploadRelativePath(files[i]),
+          playerPic,
         ],
       );
 

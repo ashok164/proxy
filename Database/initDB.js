@@ -50,7 +50,7 @@ const initDB = async () => {
         player_uid TEXT,
         player_name TEXT,
         camera_link TEXT,
-        player_pic TEXT NOT NULL,
+        player_pic TEXT,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
@@ -358,6 +358,11 @@ const initDB = async () => {
     await pool.query(`
       ALTER TABLE team_players
       ADD COLUMN IF NOT EXISTS camera_link TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE team_players
+      ALTER COLUMN player_pic DROP NOT NULL;
     `);
 
     for (const table of [
